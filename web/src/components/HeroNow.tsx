@@ -18,6 +18,7 @@ import { useAsync } from "@/hooks/useAsync";
 import { humanTokens } from "@/lib/formatTokens";
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { IconPlus, IconX } from "@/lib/icons";
 
 interface Props {
   persons: Person[];
@@ -36,6 +37,7 @@ interface Props {
   onJumpUsage?: () => void;
   /** 切换摄像头启用（PUT /api/miot/scope/cameras）；批量传 dids */
   onToggleCameras: (dids: string[], inUse: boolean) => void | Promise<void>;
+  onAddRtspCamera: (input: { name: string; url: string }) => void | Promise<void>;
 }
 
 // 排序:已认识在前,未认识统一靠后
@@ -55,6 +57,7 @@ export function HeroNow({
   onPersonClick,
   onJumpUsage,
   onToggleCameras,
+  onAddRtspCamera,
 }: Props) {
   const { t } = useTranslation();
   const sorted = sortPersons(persons);
@@ -153,6 +156,7 @@ export function HeroNow({
         miotHasCamera={miotHasCamera}
         channelByDid={channelByDid}
         onToggleCameras={onToggleCameras}
+        onAddRtspCamera={onAddRtspCamera}
       />
     </section>
   );
@@ -169,6 +173,7 @@ interface CameraSectionProps {
   miotHasCamera: boolean;
   channelByDid: Map<string, number>;
   onToggleCameras: (dids: string[], inUse: boolean) => void | Promise<void>;
+  onAddRtspCamera: (input: { name: string; url: string }) => void | Promise<void>;
 }
 
 function CameraSection({
@@ -179,8 +184,10 @@ function CameraSection({
   miotHasCamera,
   channelByDid,
   onToggleCameras,
+  onAddRtspCamera,
 }: CameraSectionProps) {
   const { t } = useTranslation();
+  const [rtspOpen, setRtspOpen] = useState(false);
   const total = scopeCameras.length;
   const activeCount = scopeCameras.filter((c) => c.inUse).length;
   const allOn = total > 0 && activeCount === total;
@@ -227,8 +234,17 @@ function CameraSection({
         <div className="flex items-baseline gap-2">
           <SectionLabel>{t("hero.liveLabel")}</SectionLabel>
         </div>
-        {total > 0 && (
-          <div className="text-caption flex items-center gap-2 text-text-tertiary">
+        <div className="text-caption flex items-center gap-2 text-text-tertiary">
+          <button
+            type="button"
+            onClick={() => setRtspOpen(true)}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-bg-primary border border-border hover:border-border-strong hover:text-text-primary transition-colors"
+          >
+            <IconPlus width={14} height={14} />
+            {t("hero.addRtsp")}
+          </button>
+          {total > 0 && (
+            <>
             <span className="num">
               {t("hero.perceivingCount", { n: activeCount })}
             </span>
@@ -258,9 +274,19 @@ function CameraSection({
             >
               {t("hero.allOff")}
             </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
+      {rtspOpen && (
+        <RtspCameraDialog
+          onClose={() => setRtspOpen(false)}
+          onSubmit={async (input) => {
+            await onAddRtspCamera(input);
+            setRtspOpen(false);
+          }}
+        />
+      )}
       {total === 0 ? (
         <div className="text-body rounded-lg bg-bg-primary border border-dashed border-border-strong text-text-secondary py-8 px-5 text-center">
           {miotHasCamera ? (
@@ -387,7 +413,9 @@ function CamCardWithToggle({ cam, channel, bulkBusy, onToggle }: CamCardProps) {
           roomName={cam.roomName}
           cameraDid={cam.did}
           channel={channel ?? 0}
+          source={cam.source ?? "miot"}
         />
+        {cam.source === "rtsp" && <SourceTag className="absolute top-2 left-2" />}
         <div className="absolute top-2 right-2">
           <CamSwitch
             inUse={cam.inUse}
@@ -417,11 +445,12 @@ function BenchCamItem({
       <div className="min-w-0">
         {/* 离线相机名字淡化,跟开关禁用呼应——离线就别让住户以为点一下能投喂。 */}
         <div
-          className={`text-body truncate ${
+          className={`text-body truncate inline-flex items-center gap-2 ${
             cam.isOnline ? "text-text-primary" : "text-text-tertiary"
           }`}
         >
-          {cam.name}
+          <span className="truncate">{cam.name}</span>
+          {cam.source === "rtsp" && <SourceTag />}
         </div>
         {(!cam.isOnline || cam.roomName) && (
           <div className="text-caption text-text-tertiary truncate">
@@ -440,6 +469,100 @@ function BenchCamItem({
         onToggle={onToggle}
       />
     </li>
+  );
+}
+
+function SourceTag({ className = "" }: { className?: string }) {
+  return (
+    <span
+      className={`shrink-0 text-[10px] leading-4 px-1.5 rounded bg-brand-soft text-brand-primary border border-brand-primary/20 ${className}`}
+    >
+      RTSP
+    </span>
+  );
+}
+
+function RtspCameraDialog({
+  onClose,
+  onSubmit,
+}: {
+  onClose: () => void;
+  onSubmit: (input: { name: string; url: string }) => void | Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const canSubmit = name.trim().length > 0 && url.trim().length > 0 && !busy;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
+      <form
+        className="w-full max-w-md rounded-xl border border-border bg-bg-secondary shadow-sm anim-in"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!canSubmit) return;
+          setBusy(true);
+          try {
+            await onSubmit({ name: name.trim(), url: url.trim() });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
+          <div className="text-title text-text-primary">{t("hero.rtspDialogTitle")}</div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-auto rounded-full p-1.5 text-text-secondary hover:text-text-primary hover:bg-bg-primary"
+            aria-label={t("devices.close")}
+          >
+            <IconX />
+          </button>
+        </div>
+        <div className="p-4 space-y-3">
+          <label className="block">
+            <span className="text-caption text-text-tertiary">
+              {t("hero.rtspNameLabel")}
+            </span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="mt-1 w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-body text-text-primary outline-none focus:border-brand-primary"
+              autoFocus
+            />
+          </label>
+          <label className="block">
+            <span className="text-caption text-text-tertiary">
+              {t("hero.rtspUrlLabel")}
+            </span>
+            <input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="rtsp://..."
+              className="mt-1 w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-body text-text-primary outline-none focus:border-brand-primary"
+            />
+          </label>
+        </div>
+        <div className="flex justify-end gap-2 px-4 py-3 border-t border-border">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-md border border-border bg-bg-primary text-text-secondary hover:text-text-primary"
+          >
+            {t("hero.rtspCancel")}
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="px-3 py-1.5 rounded-md bg-brand-primary text-white disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {busy ? t("hero.rtspSaving") : t("hero.rtspAddSubmit")}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 

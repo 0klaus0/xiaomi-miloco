@@ -32,6 +32,7 @@ import type {
   PerfTraceRow,
   PerfWindow,
   Person,
+  RtspCameraInput,
   Scene,
   ScopeCamera,
   ScopeHome,
@@ -286,6 +287,21 @@ export async function toggleScopeCamera(
   inUse: boolean,
 ): Promise<void> {
   return impl.realToggleScopeCamera(dids, inUse);
+}
+
+export async function createRtspCamera(input: RtspCameraInput): Promise<ScopeCamera> {
+  return impl.realCreateRtspCamera(input);
+}
+
+export async function updateRtspCamera(
+  did: string,
+  input: Partial<RtspCameraInput>,
+): Promise<void> {
+  return impl.realUpdateRtspCamera(did, input);
+}
+
+export async function deleteRtspCamera(did: string): Promise<void> {
+  return impl.realDeleteRtspCamera(did);
 }
 
 export async function listCameras(homeId?: HomeId): Promise<PerceptionCamera[]> {

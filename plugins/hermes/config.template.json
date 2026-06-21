@@ -8,7 +8,7 @@
   },
   "agent": {
     "webhook_url": "http://127.0.0.1:1811/miloco/webhook",
-    "auth_bearer": ""
+    "auth_bearer": "<shared-webhook-token>"
   },
   "model": {
     "omni": {
@@ -19,7 +19,8 @@
   },
   "hermes": {
     "gateway_url": "http://127.0.0.1:18789",
-    "miloco_home": "~/.hermes/miloco"
+    "miloco_home": "~/.openclaw/miloco",
+    "incoming_dir": "~/.hermes/messages/incoming"
   },
   "notify": {
     "weixin_user_id": "",

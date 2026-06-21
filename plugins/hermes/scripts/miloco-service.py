@@ -10,14 +10,12 @@ Miloco Backend Service Manager for Hermes
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
 
-MILOCO_HOME = os.environ.get("MILOCO_HOME", os.path.expanduser("~/.hermes/miloco"))
+MILOCO_HOME = os.environ.get("MILOCO_HOME", os.path.expanduser("~/.openclaw/miloco"))
 CONFIG_FILE = os.path.join(MILOCO_HOME, "config.json")
-PID_FILE = os.path.join(MILOCO_HOME, "backend.pid")
 DEFAULT_BACKEND_URL = "http://127.0.0.1:1810"
 
 
@@ -31,28 +29,6 @@ def load_config() -> dict:
 def get_backend_url() -> str:
     cfg = load_config()
     return cfg.get("server", {}).get("url", DEFAULT_BACKEND_URL)
-
-
-def get_pid() -> int:
-    if os.path.exists(PID_FILE):
-        try:
-            with open(PID_FILE) as f:
-                return int(f.read().strip())
-        except Exception:
-            pass
-    return 0
-
-
-def is_running(pid: int = 0) -> bool:
-    if not pid:
-        pid = get_pid()
-    if not pid:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
 
 
 def health_check() -> bool:
@@ -69,9 +45,8 @@ def health_check() -> bool:
 
 def start_backend():
     """启动 miloco backend"""
-    pid = get_pid()
-    if is_running(pid):
-        print(f"miloco-backend already running (PID: {pid})")
+    if health_check():
+        print("miloco-backend already healthy")
         return
 
     os.makedirs(MILOCO_HOME, exist_ok=True)
@@ -80,17 +55,17 @@ def start_backend():
     env["MILOCO_HOME"] = MILOCO_HOME
     
     try:
-        proc = subprocess.Popen(
+        subprocess.run(
             ["miloco-cli", "service", "start"],
-            env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True
+            env=env,
+            check=False,
         )
         time.sleep(3)
         
         # 验证启动
         for _ in range(10):
             if health_check():
-                print(f"miloco-backend started successfully")
+                print("miloco-backend started successfully")
                 return
             time.sleep(1)
         
@@ -105,34 +80,22 @@ def start_backend():
 
 def stop_backend():
     """停止 miloco backend"""
-    pid = get_pid()
-    if is_running(pid):
-        try:
-            os.kill(pid, signal.SIGTERM)
-            for _ in range(30):
-                if not is_running(pid):
-                    break
-                time.sleep(0.5)
-            if is_running(pid):
-                os.kill(pid, signal.SIGKILL)
-        except Exception as e:
-            print(f"Error stopping process: {e}", file=sys.stderr)
-    
-    if os.path.exists(PID_FILE):
-        os.unlink(PID_FILE)
-    
+    env = os.environ.copy()
+    env["MILOCO_HOME"] = MILOCO_HOME
+    try:
+        subprocess.run(["miloco-cli", "service", "stop"], env=env, check=False)
+    except FileNotFoundError:
+        print("miloco-cli not found. Please stop backend manually.", file=sys.stderr)
+        sys.exit(1)
     print("miloco-backend stopped")
 
 
 def show_status():
-    pid = get_pid()
-    running = is_running(pid)
-    healthy = health_check() if running else False
+    healthy = health_check()
     
     status = {
-        "running": running,
+        "running": healthy,
         "healthy": healthy,
-        "pid": pid if running else None,
         "url": get_backend_url(),
         "home": MILOCO_HOME,
     }

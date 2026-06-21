@@ -31,7 +31,6 @@ API:
 
 import json
 import os
-import re
 import signal
 import sys
 import threading
@@ -45,10 +44,48 @@ from typing import Optional
 
 # ─── 配置 ──────────────────────────────────────────────────────────────────
 
-MILOCO_HOME = os.environ.get("MILOCO_HOME", os.path.expanduser("~/.hermes/miloco"))
+def expand_path(value: str) -> str:
+    return str(Path(value).expanduser())
+
+
+def resolve_miloco_home(config: dict | None = None) -> str:
+    """Resolve the Miloco shared home path.
+
+    Keep this aligned with backend / CLI / OpenClaw defaults. Hermes runtime
+    files live under ``~/.hermes``; Miloco config and logs stay in
+    ``$MILOCO_HOME`` so all frontends point at the same backend instance.
+    """
+    if os.environ.get("MILOCO_HOME"):
+        return expand_path(os.environ["MILOCO_HOME"])
+    configured = (config or {}).get("hermes", {}).get("miloco_home")
+    if isinstance(configured, str) and configured:
+        return expand_path(configured)
+    return expand_path("~/.openclaw/miloco")
+
+
+MILOCO_HOME = resolve_miloco_home()
 DEFAULT_PORT = 1811
 DEFAULT_CONFIG = os.path.join(MILOCO_HOME, "config.json")
 DEFAULT_HERMES_BASE = "http://127.0.0.1:18789"  # Hermes gateway
+DEFAULT_HERMES_HOME = expand_path(os.environ.get("HERMES_HOME", "~/.hermes"))
+DEFAULT_INCOMING_DIR = os.path.join(DEFAULT_HERMES_HOME, "messages", "incoming")
+
+
+def resolve_bridge_auth_token(config: dict) -> str:
+    """Token expected on backend → bridge webhook calls.
+
+    Backend sends ``settings.agent.auth_bearer`` to the agent webhook. The
+    previous Hermes draft checked ``server.token`` instead, which is the
+    frontend/backend API token and does not match webhook auth.
+    """
+    agent_token = config.get("agent", {}).get("auth_bearer")
+    if isinstance(agent_token, str) and agent_token:
+        return agent_token
+    hermes_token = config.get("hermes", {}).get("auth_bearer")
+    if isinstance(hermes_token, str) and hermes_token:
+        return hermes_token
+    legacy = config.get("server", {}).get("token")
+    return legacy if isinstance(legacy, str) else ""
 
 
 # ─── Trace 管理 ────────────────────────────────────────────────────────────
@@ -85,11 +122,20 @@ class TraceStore:
             if run_id in self._turns:
                 t = self._turns[run_id]
                 t["done"] = {
+                    "runId": run_id,
                     "success": success,
-                    "error": error,
-                    "duration_ms": duration_ms,
+                    "errorCount": 0 if success else 1,
+                    "errorMsg": error or None,
+                    "durationMs": duration_ms,
                     "trace_id": t.get("trace_id", ""),
                     "query": t.get("query", ""),
+                    "llmCallCount": 0,
+                    "toolCallCount": 0,
+                    "llmTotalMs": 0.0,
+                    "toolTotalMs": 0.0,
+                    "toolMaxMs": 0.0,
+                    "slowestToolName": None,
+                    "jsonlPath": None,
                     "finished_at": time.time(),
                 }
         self._gc()
@@ -134,29 +180,36 @@ trace_store = TraceStore()
 # ─── 消息注入 ──────────────────────────────────────────────────────────────
 
 class MessageInjector:
-    """通过 Hermes gateway 的会话消息 API 注入消息。"""
+    """Inject Miloco events into Hermes.
 
-    def __init__(self, base_url: str, weixin_user_id: str = ""):
+    The least-coupled path is an incoming message spool directory. Deployments
+    can move it with ``hermes.incoming_dir`` or ``HERMES_INCOMING_DIR`` without
+    changing Miloco backend settings.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        incoming_dir: str = DEFAULT_INCOMING_DIR,
+        platform: str = "weixin",
+        user_id: str = "",
+    ):
         self.base_url = base_url.rstrip("/")
-        self.weixin_user_id = weixin_user_id
+        self.incoming_dir = expand_path(incoming_dir)
+        self.platform = platform
+        self.user_id = user_id
 
-    def inject_via_cron(self, message: str, system_prompt: str = "") -> Optional[str]:
-        """
-        通过写入 cron 触发器文件来注入消息。
-        更可靠的方式：直接在 Hermes 的 incoming 目录写文件。
-        """
-        # 方案：利用 Hermes cron job 机制 —— 创建一个一次性 cron job
-        # 直接写入 Hermes 的 messages/incoming 目录
-        incoming_dir = os.path.expanduser("~/.hermes/messages/incoming")
-        os.makedirs(incoming_dir, exist_ok=True)
+    def inject(self, message: str, system_prompt: str = "") -> str:
+        """Write one incoming message file for Hermes to consume."""
+        os.makedirs(self.incoming_dir, exist_ok=True)
         
         msg_id = str(uuid.uuid4())
-        msg_file = os.path.join(incoming_dir, f"miloco-bridge-{msg_id}.json")
+        msg_file = os.path.join(self.incoming_dir, f"miloco-bridge-{msg_id}.json")
         
         payload = {
             "id": msg_id,
-            "platform": "weixin",
-            "user_id": self.weixin_user_id,
+            "platform": self.platform,
+            "user_id": self.user_id,
             "message": message,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "metadata": {
@@ -165,10 +218,14 @@ class MessageInjector:
             }
         }
         
-        with open(msg_file, "w") as f:
+        with open(msg_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
         
         return msg_id
+
+    def inject_via_cron(self, message: str, system_prompt: str = "") -> Optional[str]:
+        """Backward-compatible alias for the first Hermes draft."""
+        return self.inject(message, system_prompt)
 
 
 # ─── HTTP Handler ──────────────────────────────────────────────────────────
@@ -237,8 +294,6 @@ class MilocoBridgeHandler(BaseHTTPRequestHandler):
         message = payload.get("message", "")
         extra_system = payload.get("extraSystemPrompt", "")
         trace_id = payload.get("traceId", "")
-        timeout_ms = payload.get("timeoutMs", 180000)
-
         if not message:
             self._send_json(400, {"code": 400, "message": "message required"})
             return
@@ -249,17 +304,17 @@ class MilocoBridgeHandler(BaseHTTPRequestHandler):
         # 注入消息到 Hermes（通过 WeChat 频道）
         try:
             if self.injector:
-                msg_id = self.injector.inject_via_cron(message, extra_system)
+                msg_id = self.injector.inject(message, extra_system)
+                trace_store.finish_turn(run_id, success=True, duration_ms=0)
                 self._send_json(200, {
                     "code": 0,
                     "message": "ok",
                     "data": {
                         "runId": run_id,
-                        "status": "processing",
+                        "status": "ok",
                         "msgId": msg_id,
                     }
                 })
-                trace_store.finish_turn(run_id, success=True, duration_ms=0)
             else:
                 self._send_json(500, {"code": 3000, "message": "injector not configured"})
         except Exception as e:
@@ -296,7 +351,7 @@ def run_server(port: int, config: dict, injector: MessageInjector):
     server_start_time = time.time()
 
     MilocoBridgeHandler.injector = injector
-    MilocoBridgeHandler.auth_token = config.get("server", {}).get("token", "")
+    MilocoBridgeHandler.auth_token = resolve_bridge_auth_token(config)
     MilocoBridgeHandler.hermes_base = config.get("hermes", {}).get("gateway_url", "http://127.0.0.1:18789")
 
     server = HTTPServer(("0.0.0.0", port), MilocoBridgeHandler)
@@ -337,9 +392,19 @@ def main():
 
     # Weixin user ID: 命令行 > 配置 > 环境变量
     weixin_user = args.weixin_user or config.get("notify", {}).get("weixin_user_id", "") or os.environ.get("WEIXIN_USER_ID", "")
-    
+    platform = config.get("notify", {}).get("default_channel", "weixin")
+    incoming_dir = (
+        os.environ.get("HERMES_INCOMING_DIR")
+        or config.get("hermes", {}).get("incoming_dir")
+        or DEFAULT_INCOMING_DIR
+    )
     hermes_base = config.get("hermes", {}).get("gateway_url", DEFAULT_HERMES_BASE)
-    injector = MessageInjector(base_url=hermes_base, weixin_user_id=weixin_user)
+    injector = MessageInjector(
+        base_url=hermes_base,
+        incoming_dir=incoming_dir,
+        platform=platform,
+        user_id=weixin_user,
+    )
 
     run_server(args.port, config, injector)
 

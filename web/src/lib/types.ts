@@ -181,12 +181,19 @@ export interface PerceptionCamera {
 export interface ScopeCamera {
   did: string;
   name: string;
+  source?: "miot" | "rtsp";
+  url?: string;
   // 米家分配的房间名（"客厅" / "卧室" / ...）。多摄像头家庭里 name 常是
   // "小米智能摄像机 2 代"等泛称，靠 roomName 才能区分。米家未分房间时为空。
   roomName?: string;
   isOnline: boolean;
   inUse: boolean;
   connected: boolean;
+}
+
+export interface RtspCameraInput {
+  name: string;
+  url: string;
 }
 
 // ── 米家家庭接入范围(scope.homes)─────────────────────────────────

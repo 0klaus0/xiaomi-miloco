@@ -14,9 +14,8 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 
-MILOCO_HOME = os.environ.get("MILOCO_HOME", os.path.expanduser("~/.hermes/miloco"))
+MILOCO_HOME = os.environ.get("MILOCO_HOME", os.path.expanduser("~/.openclaw/miloco"))
 CACHE_FILE = os.path.join(MILOCO_HOME, "catalog.cache.json")
 CACHE_TTL = 5  # 秒
 

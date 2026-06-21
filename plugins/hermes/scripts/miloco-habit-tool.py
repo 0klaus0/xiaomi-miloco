@@ -34,7 +34,7 @@ MAX_NEW_ASK_PER_DAY = 1
 STALE_DAYS = 7
 STALE_MS = STALE_DAYS * 86_400_000
 MAX_ASKS = 3
-MILOCO_HOME = os.environ.get("MILOCO_HOME", os.path.expanduser("~/.hermes/miloco"))
+MILOCO_HOME = os.environ.get("MILOCO_HOME", os.path.expanduser("~/.openclaw/miloco"))
 STORE_PATH = os.path.join(MILOCO_HOME, "home-profile", "task-suggestions.json")
 
 
