@@ -51,6 +51,7 @@ from miloco.miot.schema import (
     DeviceInfo,
     SceneInfo,
 )
+from miloco.rtsp import get_rtsp_service
 
 logger = logging.getLogger(__name__)
 
@@ -1026,12 +1027,14 @@ class MiotService:
         """
         voice_allowed = voice_allowed_camera_dids(self._kv_repo)
         connected = self._connected_camera_dids()
-        cameras = filter_by_home(
-            self._kv_repo, await self._miot_proxy.get_cameras() or {}
-        )
+        cameras = {}
+        if self._miot_proxy.is_authenticated:
+            cameras = filter_by_home(
+                self._kv_repo, await self._miot_proxy.get_cameras() or {}
+            )
         # 过滤已从账号删除的摄像头：_camera_info_dict 是内存缓存，
         # 设备删除后不会自动清除，需要用 _device_info_dict 做交集校验。
-        devices = await self._miot_proxy.get_devices()
+        devices = await self._miot_proxy.get_devices() if self._miot_proxy.is_authenticated else {}
         cameras = {did: info for did, info in cameras.items() if did in devices}
         # awake：只读缓存（云读收在 refresh_camera_online_status，前端列表前必调）。
         awake_map = await self._miot_proxy.read_cameras_awake(
@@ -1052,17 +1055,15 @@ class MiotService:
                     # 透 room_name 让前端能在多摄像头家庭显示"客厅 / 卧室"区分——
                     # 米家默认相机名常是"小米智能摄像机 2 代"等泛称，光看 name 难辨。
                     "room_name": getattr(info, "room_name", None),
-                    "cloud_online": cloud_online,
-                    "lan_reachable": lan_reachable,
-                    "awake": awake_map.get(did),
-                    # 兼容旧字段：纯连通性(云端+局域网)，不含镜头开关维度。
-                    "is_online": cloud_online and lan_reachable,
-                    "in_use": did in active,
-                    # 存储偏好：在拾音白名单 = 拾音开启（**默认关闭**，opt-in）。
-                    "voice_in_use": did in voice_allowed,
+                    "source": "miot",
+                    "is_online": online,
+                    "in_use": did not in denied,
                     "connected": did in connected,
                 }
             )
+        out.extend(
+            get_rtsp_service().list_state(denied=denied, connected=connected)
+        )
         return out
 
     async def toggle_camera(self, items: list[dict]) -> list[dict]:
@@ -1074,11 +1075,18 @@ class MiotService:
         disable_dids = [i["did"] for i in items if not i["in_use"]]
         all_dids = enable_dids + disable_dids
 
-        cameras = await self._miot_proxy.get_cameras() or {}
-        unknown = [d for d in all_dids if d not in cameras]
+        cameras = (
+            await self._miot_proxy.get_cameras()
+            if self._miot_proxy.is_authenticated
+            else {}
+        ) or {}
+        rtsp_service = get_rtsp_service()
+        rtsp_cameras = {cam.did: cam for cam in rtsp_service.list_records()}
+        known_dids = set(cameras) | set(rtsp_cameras)
+        unknown = [d for d in all_dids if d not in known_dids]
         if unknown:
             raise ValidationException(
-                f"Unknown camera did(s) {unknown}; valid: {sorted(cameras.keys())}"
+                f"Unknown camera did(s) {unknown}; valid: {sorted(known_dids)}"
             )
 
         def _in_scope(did: str) -> bool:
@@ -1087,12 +1095,17 @@ class MiotService:
             )
 
         if enable_dids:
-            in_scope = {d for d in cameras if _in_scope(d)}
-            # 三态门（后端唯一执法点：web 置灰只保护前端，CLI/API 绕过前端全靠这里）。
-            # 开启的相机必须 云端在线 && 局域网可达 && 镜头未关，任一坏都拒、给对应文案。
-            # awake 走**新鲜云读**（非 cache_only）——CLI/冷缓存下也能准确挡镜头关。
-            # 只拦「开启」；已启用的相机掉线/镜头关仍可被「关闭」(disable 不走这条)。
-            awake_map = await self._miot_proxy.read_cameras_awake(sorted(in_scope))
+            # 离线设备禁止「开启」投喂:它被感知接入层 online_only 过滤、永远连不上,
+            # 开了也不出画面、徒占上限名额。只拦「开启」——已启用的设备掉线后仍保留
+            # inUse=true(允许态不被强制改),且可正常被「关闭」(disable 不走这条校验)。
+            # 在线口径 = online && lan_online,与 list_cameras_with_state 的 is_online 一致。
+            def _online(did: str) -> bool:
+                if did in rtsp_cameras:
+                    return rtsp_service.is_online(did)
+                info = cameras[did]
+                return bool(getattr(info, "online", False)) and bool(
+                    getattr(info, "lan_online", False)
+                )
 
             def _cloud(did: str) -> bool:
                 return bool(getattr(cameras[did], "online", False))
@@ -1127,12 +1140,19 @@ class MiotService:
             # 一致）。这样不会出现「面板显示有名额、点开启却被后端拒」的口径背离。
             denied = denied_camera_dids(self._kv_repo)
 
-            def _usable(did: str) -> bool:
-                return _cloud(did) and _lan(did) and _lens_ok(did)
+            def _in_scope(did: str) -> bool:
+                if did in rtsp_cameras:
+                    return True
+                return is_home_allowed(
+                    self._kv_repo, getattr(cameras[did], "home_id", None)
+                )
 
-            # 模拟本批操作后的启用集：现状未拉黑的，先去掉本批 disable，再并入本批
-            # enable（enable 最后并入 → 与写库顺序一致，矛盾输入 enable 胜出）。
-            intent_after = (
+            in_scope = {d for d in known_dids if _in_scope(d)}
+            # 模拟本批操作后的启用集：现状未拉黑的，先去掉本批 disable，再并入
+            # 本批 enable。enable 最后并入 → 与写库顺序一致（disable 先写、
+            # enable 后写，矛盾输入 enable 胜出）。单向 enable / 单向 disable /
+            # 混合换机都按净结果校验。
+            final_enabled = (
                 (in_scope - denied) - set(disable_dids)
             ) | (set(enable_dids) & in_scope)
             usable_after = {d for d in intent_after if _usable(d)}

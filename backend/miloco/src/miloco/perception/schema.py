@@ -501,28 +501,13 @@ class MeaningfulEvent(BaseModel):
         default_factory=dict,
         description="rule_id → rule_name 映射;UI 渲染规则提醒文本时把 [rule_id] 替换成 rule_name",
     )
-    has_trace: bool = Field(
-        default=False,
-        description="snapshots/{event_id}/omni_trace.json.gz 是否存在;前端据此决定是否显示反馈按钮",
-    )
-    has_feedback: bool = Field(
-        default=False,
-        description="该事件是否已有反馈打包",
-    )
-    feedback_pack_path: str | None = Field(
-        default=None,
-        description="最近一次反馈包的本地路径",
-    )
-    feedback_pack_size: int | None = Field(
-        default=None,
-        description="最近一次反馈包的大小(bytes)",
-    )
-    clip_kind: Literal["mp4", "m4a"] | None = Field(
+    clip_kind: Literal["mp4", "m4a", "frames"] | None = Field(
         default=None,
         description=(
             "Container of the persisted clip,服务端 stat 落盘文件后缀计算:"
             "'mp4' = H264+AAC video container(omni video 路径产物);"
             "'m4a' = AAC-only audio container(omni audio-only 路径产物);"
+            "'frames' = JPEG key frame sequence(omni frames 路径产物);"
             "None = no clip on disk(metadata-only / cleanup 已清).多 device 共识下"
             "全 device kind 一致(见 prompt_builder._is_audio_only),取第一个 device 即可."
         ),

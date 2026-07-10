@@ -21,7 +21,6 @@
 
 from __future__ import annotations
 
-import gzip
 import json
 import logging
 import re
@@ -31,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from miloco.config import get_settings
-from miloco.perception.snapshot_context import ClipKind, OmniEventArtifacts
+from miloco.perception.snapshot_context import ClipKind, FrameClip
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +91,11 @@ def check_disk_space(root: Path, min_free_mb: int) -> bool:
         return True
 
 
-def save_event_artifacts(event_id: str, artifacts: OmniEventArtifacts) -> int:
-    """落盘一次 omni 触发事件的所有产物(clip 字节 + omni trace).
+def save_clips(
+    event_id: str,
+    clips_by_device: dict[str, tuple[bytes | list[FrameClip], ClipKind]],
+) -> int:
+    """落盘 event clip(每个 device 一个字节级 = omni 看到的 mp4 / m4a).
 
     路径:
     - per-device clip: `{snapshot_root}/{event_id}/{region_slug(device_id)}/clip.{mp4|m4a}`
@@ -134,10 +136,15 @@ def _save_clips(
 ) -> int:
     """落 per-device clip 字节到 event_dir.kind 非法 / 空字节 → 跳过该 device."""
     count = 0
-    for device_id, (clip_bytes, kind) in clips.items():
-        if not clip_bytes:
+    for device_id, payload in clips_by_device.items():
+        # 兼容两种 payload 形态:tuple[bytes, kind] 或 裸 bytes(老 caller / 单测)
+        if isinstance(payload, tuple):
+            clip_payload, kind = payload
+        else:
+            clip_payload, kind = payload, "mp4"
+        if not clip_payload:
             continue
-        if kind not in ("mp4", "m4a"):
+        if kind not in ("mp4", "m4a", "frames"):
             logger.error("Unknown clip kind %r for %s; skipping", kind, device_id)
             continue
         device_dir = event_dir / region_slug(device_id)
@@ -146,9 +153,17 @@ def _save_clips(
         except OSError as e:
             logger.error("Failed to create device dir %s: %s", device_dir, e)
             continue
+        if kind == "frames":
+            if not _write_frame_sequence(device_dir, clip_payload):
+                continue
+            count += 1
+            continue
+        if not isinstance(clip_payload, bytes):
+            logger.error("Invalid clip payload kind %r for %s; skipping", kind, device_id)
+            continue
         path = device_dir / f"clip.{kind}"
         try:
-            path.write_bytes(clip_bytes)
+            path.write_bytes(clip_payload)
             count += 1
         except OSError as e:
             logger.error("Failed to write %s: %s", path, e)
@@ -156,40 +171,40 @@ def _save_clips(
     return count
 
 
-def _save_trace(event_dir: Path, trace: dict[str, Any]) -> None:
-    """gzip 压缩 trace dict 并落盘.失败 logger.error 不抛,clip 落盘不受影响."""
+def _write_frame_sequence(device_dir: Path, payload: object) -> bool:
+    if not isinstance(payload, list):
+        logger.error("Invalid frames payload for %s; skipping", device_dir)
+        return False
+    written = 0
+    manifest = []
+    for pos, frame in enumerate(payload):
+        if not isinstance(frame, dict):
+            continue
+        data = frame.get("data")
+        media_type = frame.get("media_type", "image/jpeg")
+        if not isinstance(data, bytes) or not data or media_type != "image/jpeg":
+            continue
+        path = device_dir / f"frame_{pos:03d}.jpg"
+        try:
+            path.write_bytes(data)
+            manifest.append({
+                "index": pos,
+                "frame_index": frame.get("frame_index", pos),
+                "filename": path.name,
+            })
+            written += 1
+        except OSError as e:
+            logger.error("Failed to write %s: %s", path, e)
+    if written <= 0:
+        return False
     try:
-        payload = json.dumps(trace, ensure_ascii=False, separators=(",", ":")).encode(
-            "utf-8"
+        (device_dir / "frames.json").write_text(
+            json.dumps({"frames": manifest}, ensure_ascii=False),
+            encoding="utf-8",
         )
-        gz_bytes = gzip.compress(payload)
-        (event_dir / "omni_trace.json.gz").write_bytes(gz_bytes)
-    except (OSError, TypeError, ValueError) as e:
-        logger.error("Failed to write trace for %s: %s", event_dir.name, e)
-
-
-def _save_gallery(event_dir: Path, gallery: dict[str, dict[str, bytes]]) -> None:
-    """落盘画廊合成图到 {event_dir}/gallery/{person_id}_{kind}.{ext}.
-
-    通过 magic bytes 判断实际格式(PNG/JPEG),扩展名与内容一致.
-    """
-    gallery_dir = event_dir / "gallery"
-    try:
-        gallery_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        logger.error("Failed to create gallery dir %s: %s", gallery_dir, e)
-        return
-    for person_id, images in gallery.items():
-        slug = region_slug(person_id)
-        for kind, image_bytes in images.items():
-            if not image_bytes:
-                continue
-            ext = "png" if image_bytes[:4] == b"\x89PNG" else "jpg"
-            path = gallery_dir / f"{slug}_{kind}.{ext}"
-            try:
-                path.write_bytes(image_bytes)
-            except OSError as e:
-                logger.error("Failed to write gallery %s: %s", path, e)
+        logger.error("Failed to write frame manifest in %s: %s", device_dir, e)
+    return True
 
 
 def cleanup_snapshots(ttl_days: int, max_disk_mb: int) -> dict:

@@ -2,8 +2,8 @@
  * 「模型」页顶部的 omni 模型配置卡(可折叠,默认展开)。
  *
  * 两块:
- * - 上:**当前模型** —— 当前生效配置(model / Base URL / 打码 key);未配 key 给警告。
- * - 下:**模型列表** —— 每行 模型 | Base URL | API Key(打码),可「启用」/「删除」;
+ * - 上:模型配置概览;未配 key 给警告。
+ * - 下:**模型列表** —— 每行 模型 | Base URL | 能力 | API Key(打码),可「启用/停用」/「编辑」/「删除」;
  *   「＋ 新增」展开表单(Base URL → API Key → 模型组合框 + 测试连接 + 保存)。
  *
  * 档案名对用户隐藏:内部用 `model @ base_url` 作为后端 label(唯一 id)。重复添加同
@@ -16,19 +16,24 @@ import { useTranslation } from "react-i18next";
 import {
   getOmniConfig,
   updateOmniConfig,
-  activateOmniConfig,
-  deactivateOmniConfig,
   deleteOmniConfig,
   listOmniModels,
   testOmniConfig,
 } from "@/api";
-import type { OmniConfigState, OmniProfile, OmniTestResult } from "@/lib/types";
-import { IconX, IconEye, IconEyeOff } from "@/lib/icons";
+import type {
+  OmniCapability,
+  OmniConfigState,
+  OmniProfile,
+  OmniTestResult,
+} from "@/lib/types";
 import { toast } from "./Toast";
 
 const INPUT_CLS =
   "w-full px-3 py-2 rounded-lg bg-bg-primary border border-border " +
   "focus:border-brand-primary focus:outline-none text-text-primary num";
+
+const CAPABILITIES: OmniCapability[] = ["text", "image", "video", "audio"];
+const DEFAULT_CAPABILITIES: OmniCapability[] = ["text", "image", "video", "audio"];
 
 // omni 测试 / 模型列表的后端机器码 → i18n key;命中走前端本地化,
 // 未命中(如 http_error,含动态 HTTP 细节)回退后端 message。
@@ -171,7 +176,7 @@ export function UsageOmniConfig() {
 
   // 新增 / 编辑表单(共用):editing 非空表示在编辑该 label 对应的已有配置
   const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
+  const [editingLabel, setEditingLabel] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false); // API Key 明文/密文切换(末端眼睛图标)
@@ -179,8 +184,13 @@ export function UsageOmniConfig() {
   const [models, setModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsMsg, setModelsMsg] = useState<string | null>(null);
-  const [modelsErr, setModelsErr] = useState(false); // modelsMsg 是否为错误(决定红色突出)
-  const [modelsErrCode, setModelsErrCode] = useState<string | null>(null); // 错误机器码(决定就近显示在哪个字段)
+  const [profileEnabled, setProfileEnabled] = useState(true);
+  const [capabilities, setCapabilities] = useState<OmniCapability[]>([
+    "text",
+    "image",
+    "video",
+    "audio",
+  ]);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<OmniTestResult | null>(null);
@@ -215,40 +225,79 @@ export function UsageOmniConfig() {
   const existing = profiles.find(
     (p) => p.base_url === baseUrl.trim() && p.model === model.trim(),
   );
+  const editingProfile = editingLabel
+    ? profiles.find((p) => p.label === editingLabel)
+    : undefined;
 
   function startAdd() {
     setAdding(true);
-    setEditing(null);
+    setEditingLabel(null);
     setBaseUrl("");
     setApiKey("");
     setShowKey(false);
     setModel("");
     setModels([]);
     setModelsMsg(null);
-    setModelsErr(false);
-    setModelsErrCode(null);
+    setProfileEnabled(true);
+    setCapabilities(["text", "image", "video", "audio"]);
     setTestResult(null);
   }
 
-  // 编辑已有配置:预填 base_url / model,key 留空(占位提示「留空则不修改」),复用同一表单与 onSave 的 upsert。
   function startEdit(p: OmniProfile) {
     setAdding(true);
-    setEditing(p.label);
+    setEditingLabel(p.label);
     setBaseUrl(p.base_url);
     setApiKey("");
-    setShowKey(false);
     setModel(p.model);
     setModels([]);
     setModelsMsg(null);
-    setModelsErr(false);
-    setModelsErrCode(null);
+    setProfileEnabled(profileEnabledValue(p));
+    setCapabilities(profileCapabilities(p));
     setTestResult(null);
-    void fetchModels(p.base_url, "", p.label);
   }
 
-  // label 非空时:编辑态下未填新 key 也能让后端用该档案存档 key 拉模型(否则需 key 的厂商
-  // 会回 bad_key,一打开编辑就误报红错)。
-  async function fetchModels(bu: string, key: string, label?: string | null) {
+  function capabilityLabel(capability: OmniCapability): string {
+    return t(`usage.capability.${capability}`);
+  }
+
+  function profileEnabledValue(p: OmniProfile): boolean {
+    return p.enabled ?? true;
+  }
+
+  function profileCapabilities(p: OmniProfile): OmniCapability[] {
+    return p.capabilities?.length ? p.capabilities : DEFAULT_CAPABILITIES;
+  }
+
+  function toggleDraftCapability(capability: OmniCapability) {
+    setCapabilities((prev) => {
+      if (prev.includes(capability)) {
+        return prev.length === 1 ? prev : prev.filter((item) => item !== capability);
+      }
+      return CAPABILITIES.filter((item) => item === capability || prev.includes(item));
+    });
+  }
+
+  async function updateProfileRoute(
+    p: OmniProfile,
+    patch: { enabled?: boolean; capabilities?: OmniCapability[] },
+  ) {
+    try {
+      setState(await updateOmniConfig({
+        label: p.label,
+        model: p.model,
+        base_url: p.base_url,
+        original_label: p.label,
+        activate: false,
+        enabled: patch.enabled ?? profileEnabledValue(p),
+        capabilities: patch.capabilities ?? profileCapabilities(p),
+      }));
+      toast(t("usage.routeUpdateSuccess"), "ok");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : t("usage.routeUpdateFailed"), "danger");
+    }
+  }
+
+  async function fetchModels(bu: string, key: string) {
     if (!bu.trim()) return;
     setModelsLoading(true);
     setModelsMsg(null);
@@ -287,33 +336,27 @@ export function UsageOmniConfig() {
       toast(t("usage.baseUrlModelRequired"), "warn");
       return;
     }
-    // 目标条目:编辑态用被编辑的 label;否则按 (model, base_url) 命中已有(隐式 upsert)。
-    // 用 ||(非 ??)让空串落空 → 当作新增并生成 label,绝不把空 original_label 发给后端。
-    const target = editing || existing?.label || undefined;
-    if (!apiKey.trim() && !editTarget(target)?.has_key) {
+    if (!apiKey.trim() && !existing?.has_key && !editingProfile?.has_key) {
       toast(t("usage.apiKeyRequired"), "warn");
       return;
     }
     setSaving(true);
     try {
+      const originalLabel = editingLabel || existing?.label;
+      const targetLabel = editingLabel ? `${m} @ ${bu}` : existing ? existing.label : `${m} @ ${bu}`;
       const s = await updateOmniConfig({
-        label: target ?? `${m} @ ${bu}`,
+        label: targetLabel,
         model: m,
         base_url: bu,
         api_key: apiKey.trim() || undefined,
-        original_label: target,
+        original_label: originalLabel || undefined,
         activate: false, // 只入列表;启用由模型列表的「启用」负责
+        enabled: profileEnabled,
+        capabilities,
       });
       setState(s);
       setAdding(false);
-      setEditing(null);
-      // 保存后清掉该条旧的行内测试结果(key/model 可能已变,旧 ✓ 会误导)。
-      if (target)
-        setRowTestResults((m2) => {
-          const next = { ...m2 };
-          delete next[target];
-          return next;
-        });
+      setEditingLabel(null);
       toast(t("usage.saveSuccess"), "ok");
     } catch (e) {
       toast(e instanceof Error ? e.message : t("usage.saveFailed"), "danger");
@@ -334,8 +377,7 @@ export function UsageOmniConfig() {
       toast(t("usage.baseUrlModelRequired"), "warn");
       return;
     }
-    const target = editing || existing?.label || undefined;
-    if (!apiKey.trim() && !editTarget(target)?.has_key) {
+    if (!apiKey.trim() && !existing?.has_key && !editingProfile?.has_key) {
       toast(t("usage.apiKeyRequiredBeforeTest"), "warn");
       return;
     }
@@ -343,7 +385,7 @@ export function UsageOmniConfig() {
     setTestResult(null);
     try {
       const res = await testOmniConfig({
-        label: target ?? "",
+        label: editingLabel || (existing ? existing.label : ""),
         model: m,
         base_url: bu,
         api_key: apiKey.trim() || undefined,
@@ -356,50 +398,8 @@ export function UsageOmniConfig() {
     }
   }
 
-  // 列表行内「测试」:对已存档的该条按 label 测(用存档 key,无需带 key),结果就地显示。
-  async function onTestRow(p: OmniProfile) {
-    setRowTesting(p.label);
-    setRowTestResults((m) => {
-      const next = { ...m };
-      delete next[p.label];
-      return next;
-    });
-    try {
-      const res = await testOmniConfig({ label: p.label, model: p.model, base_url: p.base_url });
-      setRowTestResults((m) => ({ ...m, [p.label]: res }));
-    } catch (e) {
-      setRowTestResults((m) => ({
-        ...m,
-        [p.label]: { ok: false, message: e instanceof Error ? e.message : t("usage.testFailed") },
-      }));
-    } finally {
-      setRowTesting(null);
-    }
-  }
-
-  // 启用前先跑一次测试(用存档 key 真正探测模型):仅「连接正常」(✓绿)才放行启用;否则不启用,
-  // 顶部 toast 给出原因,并把结果写进该行「连接状态」列(原因文案与状态列一致)。
-  async function onActivate(p: OmniProfile) {
-    setActivating(p.label);
-    try {
-      const res = await testOmniConfig({ label: p.label, model: p.model, base_url: p.base_url });
-      setRowTestResults((m) => ({ ...m, [p.label]: res }));
-      if (severityOf(res) !== "ok") {
-        toast(`${t("usage.cannotEnable")}：${testReason(res)}`, severityOf(res) === "warn" ? "warn" : "danger");
-        return;
-      }
-      setState(await activateOmniConfig({ label: p.label }));
-      toast(t("usage.activateSuccess"), "ok");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : t("usage.activateFailed"), "danger");
-    } finally {
-      setActivating(null);
-    }
-  }
-
-  // 停用当前生效模型:回未配态 + 软停感知,保留档案(可再启用)。与「启用」对称的反向操作。
-  async function onDeactivate(p: OmniProfile) {
-    setDeactivating(p.label);
+  async function onDelete(p: OmniProfile) {
+    if (!window.confirm(t("usage.deleteConfirm", { model: p.model, host: hostOf(p.base_url) }))) return;
     try {
       setState(await deactivateOmniConfig({ label: p.label }));
       toast(t("usage.deactivateSuccess"), "ok");
@@ -511,6 +511,7 @@ export function UsageOmniConfig() {
                     <tr className="text-text-secondary border-b border-border">
                       <th className="text-left px-5 md:px-6 py-2">{t("usage.colModel")}</th>
                       <th className="text-left px-3 py-2">{t("usage.baseUrlLabel")}</th>
+                      <th className="text-left px-3 py-2">{t("usage.colRoute")}</th>
                       <th className="text-left px-3 py-2">{t("usage.colApiKey")}</th>
                       <th className="text-left px-3 py-2 w-44">{t("usage.colStatus")}</th>
                       <th className="text-left px-5 md:px-6 py-2">{t("usage.colAction")}</th>
@@ -528,12 +529,7 @@ export function UsageOmniConfig() {
                       </tr>
                     ) : (
                       profiles.map((p) => (
-                        <tr
-                          key={p.label}
-                          className={`border-b border-border last:border-b-0 ${
-                            p.active ? "bg-brand-soft" : ""
-                          }`}
-                        >
+                        <tr key={p.label} className="border-b border-border last:border-b-0">
                           <td className="px-5 md:px-6 py-2.5 num text-text-primary">
                             {p.model}
                             {p.active && (
@@ -543,71 +539,47 @@ export function UsageOmniConfig() {
                             )}
                           </td>
                           <td className="px-3 py-2.5 num text-text-tertiary">{p.base_url}</td>
+                          <td className="px-3 py-2.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {profileCapabilities(p).map((capability) => (
+                                <span
+                                  key={capability}
+                                  className="rounded border border-border px-1.5 py-0.5 text-[11px] leading-4 text-text-secondary"
+                                >
+                                  {capabilityLabel(capability)}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
                           <td className="px-3 py-2.5 num text-text-tertiary">
                             {p.has_key ? p.api_key_masked : t("usage.notConfigured")}
                           </td>
-                          {/* 连接状态列:默认「未测试」;点行内「测试」就地刷新;定宽截断,溢出 hover 看全文 */}
-                          {/* 固定宽 w-44 单行截断(列宽恒定不横向挤压);文字被截断时鼠标悬浮即时弹出
-                              锚定元素底部的 fixed 浮层显示全文(避开表格 overflow 裁剪、无原生 title 延迟) */}
-                          <td className="px-3 py-2.5">
-                            {rowTesting === p.label ? (
-                              <span className="block w-44 truncate text-text-tertiary">{t("usage.testing")}</span>
-                            ) : rowTestResults[p.label] ? (
-                              <span
-                                className={`block w-44 truncate ${SEV_CLASS[severityOf(rowTestResults[p.label])]}`}
-                                onMouseEnter={showTip}
-                                onMouseLeave={hideTip}
-                              >
-                                {testResultText(rowTestResults[p.label])}
-                              </span>
-                            ) : (
-                              <span className="block w-44 truncate text-text-tertiary">{t("usage.statusUntested")}</span>
-                            )}
-                          </td>
-                          <td className="px-5 md:px-6 py-2.5 text-left whitespace-nowrap">
-                            <div className="inline-flex items-center gap-3 align-middle">
-                              {p.active ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onDeactivate(p)}
-                                  disabled={deactivating === p.label}
-                                  className="hover:bg-error-bg text-error border border-error rounded-md px-2.5 py-1 disabled:opacity-60"
-                                >
-                                  {deactivating === p.label ? t("usage.deactivating") : t("usage.deactivate")}
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => onActivate(p)}
-                                  disabled={activating === p.label}
-                                  className="hover:bg-brand-soft text-brand-primary border border-brand-primary rounded-md px-2.5 py-1 disabled:opacity-60"
-                                >
-                                  {activating === p.label ? t("usage.testing") : t("usage.activate")}
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => onTestRow(p)}
-                                disabled={rowTesting === p.label}
-                                className="text-text-secondary hover:text-brand-primary disabled:opacity-60"
-                              >
-                                {rowTesting === p.label ? t("usage.testing") : t("usage.test")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => startEdit(p)}
-                                className="text-text-secondary hover:text-brand-primary"
-                              >
-                                {t("usage.edit")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setDeleteTarget(p)}
-                                className="text-text-tertiary hover:text-error"
-                              >
-                                {t("usage.delete")}
-                              </button>
-                            </div>
+                          <td className="px-5 md:px-6 py-2.5 text-right whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => updateProfileRoute(p, { enabled: !profileEnabledValue(p) })}
+                              className={`rounded-md border px-2.5 py-1 mr-3 ${
+                                profileEnabledValue(p)
+                                  ? "border-border text-text-secondary hover:text-warning"
+                                  : "border-brand-primary text-brand-primary hover:bg-brand-soft"
+                              }`}
+                            >
+                              {profileEnabledValue(p) ? t("usage.disable") : t("usage.activate")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => startEdit(p)}
+                              className="text-text-secondary hover:text-brand-primary mr-3"
+                            >
+                              {t("usage.edit")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onDelete(p)}
+                              className="text-text-tertiary hover:text-error"
+                            >
+                              {t("usage.delete")}
+                            </button>
                           </td>
                         </tr>
                       ))
@@ -631,7 +603,7 @@ export function UsageOmniConfig() {
               {adding && (
                 <div className="mt-4 rounded-lg bg-bg-primary border border-border p-4 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 items-start">
                   <div className="md:col-span-2 text-caption text-text-secondary">
-                    {editing ? t("usage.editFormHint") : t("usage.addFormHint")}
+                    {editingLabel ? t("usage.editFormHint") : t("usage.addFormHint")}
                   </div>
                   <Field label={t("usage.baseUrlLabel")} className="md:col-span-2">
                     <input
@@ -715,6 +687,38 @@ export function UsageOmniConfig() {
                               : t("usage.modelsHint")}
                     </span>
                   </Field>
+                  <Field label={t("usage.routeEnabledLabel")}>
+                    <label className="inline-flex items-center gap-2 text-caption text-text-primary">
+                      <input
+                        type="checkbox"
+                        checked={profileEnabled}
+                        onChange={(e) => setProfileEnabled(e.target.checked)}
+                        className="size-4 accent-brand-primary"
+                      />
+                      {t("usage.routeEnabledHint")}
+                    </label>
+                  </Field>
+                  <Field label={t("usage.capabilitiesLabel")}>
+                    <div className="flex flex-wrap gap-2">
+                      {CAPABILITIES.map((capability) => {
+                        const selected = capabilities.includes(capability);
+                        return (
+                          <button
+                            key={capability}
+                            type="button"
+                            onClick={() => toggleDraftCapability(capability)}
+                            className={`rounded-md border px-3 py-1.5 text-caption ${
+                              selected
+                                ? "border-brand-primary bg-brand-soft text-brand-primary"
+                                : "border-border text-text-secondary hover:border-brand-primary"
+                            }`}
+                          >
+                            {capabilityLabel(capability)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </Field>
                   <div className="md:col-span-2 pt-1 flex items-center gap-3 flex-wrap">
                     <button
                       type="button"
@@ -736,7 +740,7 @@ export function UsageOmniConfig() {
                       type="button"
                       onClick={() => {
                         setAdding(false);
-                        setEditing(null);
+                        setEditingLabel(null);
                         setTestResult(null);
                       }}
                       disabled={saving || testing}

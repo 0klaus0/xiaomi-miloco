@@ -306,16 +306,16 @@ class PipelineProcessor:
             in_delay_s = (datetime.now().astimezone() - end_dt).total_seconds()
 
             # 2. Single batch inference call (convert + gate + edge + omni)
-            # 旁路收集 omni 拿到的 clip 字节 + omni HTTP trace 给 meaningful_events 复用.
-            # 因为 omni 推理跑在 inference thread executor 里(asyncio.run 起新 loop,
-            # ContextVar 不跨线程),artifacts 必须**显式作为入参透传**给
-            # realtime_perceive,让它在 inference 线程的新 loop 入口重新 set ContextVar.
-            # artifacts.clips value 是 (bytes, kind) — kind ∈ {"mp4","m4a"} 区分视频/
-            # audio-only 路径,持久化层据此选 clip.mp4 / clip.m4a 扩展名 + Content-Type.
-            # artifacts.trace 由 omni HTTP 调用 finally 填入,随 clip 一起落到 event_dir.
-            from miloco.perception.snapshot_context import OmniEventArtifacts
+            # 旁路收集 omni 拿到的字节级 mp4 给 meaningful_events 复用.因为 omni 推理
+            # 跑在 inference thread executor 里(asyncio.run 起新 loop,ContextVar
+            # 不跨线程),clip_sink 必须**显式作为入参透传**给 realtime_perceive,
+            # 让它在 inference 线程的新 loop 入口重新 set ContextVar.
+            # sink value 是 (payload, kind) — kind ∈ {"mp4","m4a","frames"}
+            # 区分视频/audio-only/抽帧图片路径,
+            # 持久化层据此选 clip.mp4 / clip.m4a 扩展名 + 服务端选 Content-Type.
+            from miloco.perception.snapshot_context import ClipKind, FrameClip
 
-            artifacts = OmniEventArtifacts()
+            clips_by_device: dict[str, tuple[bytes | list[FrameClip], ClipKind]] = {}
             try:
                 result, early_sent_contents, early_sent_rule_ids, early_sent_sugg_ids = await self._perception_engine_proxy.realtime_perceive(
                     batch, artifacts=artifacts
@@ -358,11 +358,9 @@ class PipelineProcessor:
             # 视频路径 mp4 = H264+AAC;audio-only 路径 mp4 = 纯 AAC m4a 容器.
             # engine 异常 / 全 device gate skipped → artifacts.clips 为空,device_ids=[] →
             # _persist 仍入表(metadata-only)给 UI 显示语义提示,但不落盘.
-            # 同 batch 内空字节的 device 被过滤掉(payload[0] 真值判).
-            if result.skipped:
-                artifacts.clips.clear()
-            else:
-                artifacts.clips = {
+            clips_to_save: dict[str, tuple[bytes | list[FrameClip], ClipKind]] = {}
+            if not result.skipped:
+                clips_to_save = {
                     did: payload
                     for did, payload in artifacts.clips.items()
                     if payload[0]

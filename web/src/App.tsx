@@ -5,6 +5,8 @@
 import { useEffect, useState } from "react";
 import {
   getHomeStatus,
+  createRtspCamera,
+  updateRtspCamera,
   listActivity,
   listCameras,
   listDevices,
@@ -238,18 +240,33 @@ function MainApp() {
                 cameras.reload();
                 status.reload();
               }}
-              onToggleCameraVoice={async (did, voiceInUse) => {
+              onAddRtspCamera={async (input) => {
                 try {
-                  await toggleScopeCameraVoice([did], voiceInUse);
+                  await createRtspCamera(input);
+                  toast(t("hero.rtspAdded"), "ok");
                 } catch (e) {
                   toast(
-                    e instanceof Error ? e.message : t("common.switchFailed"),
+                    e instanceof Error ? e.message : t("hero.rtspAddFailed"),
                     "warn",
                   );
                 }
-                // 拾音开关只改 KV 偏好,不动投喂/流(音频在引擎入口按 KV 实时剥离),
-                // 只需 reload scopeCameras 拿新 voiceInUse。
                 scopeCameras.reload();
+                cameras.reload();
+                status.reload();
+              }}
+              onUpdateRtspCamera={async (did, input) => {
+                try {
+                  await updateRtspCamera(did, input);
+                  toast(t("hero.rtspUpdated"), "ok");
+                } catch (e) {
+                  toast(
+                    e instanceof Error ? e.message : t("hero.rtspUpdateFailed"),
+                    "warn",
+                  );
+                }
+                scopeCameras.reload();
+                cameras.reload();
+                status.reload();
               }}
             />
           </div>
