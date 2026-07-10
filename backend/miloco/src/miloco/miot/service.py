@@ -1056,7 +1056,7 @@ class MiotService:
                     # 米家默认相机名常是"小米智能摄像机 2 代"等泛称，光看 name 难辨。
                     "room_name": getattr(info, "room_name", None),
                     "source": "miot",
-                    "is_online": online,
+                    "is_online": cloud_online and lan_reachable,
                     "in_use": did not in denied,
                     "connected": did in connected,
                 }
