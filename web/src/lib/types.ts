@@ -187,19 +187,8 @@ export interface ScopeCamera {
   // 米家分配的房间名（"客厅" / "卧室" / ...）。多摄像头家庭里 name 常是
   // "小米智能摄像机 2 代"等泛称，靠 roomName 才能区分。米家未分房间时为空。
   roomName?: string;
-  // 三个正交可用性指标（替代旧的一把揉 isOnline）：
-  cloudOnline: boolean; // 米家云端在线
-  lanReachable: boolean; // 局域网可达（拉流前提）
-  // 镜头开关（camera-control:on）。true=镜头开启 / false=镜头关闭(隐私·遮挡) /
-  // null=该机型无开关属性或读取失败（未知）。
-  awake: boolean | null;
-  // 当下真正开启（后端 = 在活跃集里：默认开·未拉黑 + 三态满足 + 上限≤4）。离线/
-  // 不可达/镜头关的相机 inUse=false，不显示为开；超上限的也不算开。
+  isOnline: boolean;
   inUse: boolean;
-  // 拾音「存储偏好」（PUT /api/miot/scope/cameras/voice）。false = mic-off：该相机
-  // 声音完全不被处理（引擎入口剥离音频，不转写、不上云）。与 inUse 正交：
-  // 生效态 = inUse && voiceInUse（关掉相机感知时拾音自动失效，但偏好保留、不落库）。
-  voiceInUse: boolean;
   connected: boolean;
 }
 
@@ -349,7 +338,7 @@ export interface OmniConfigUpdate {
 /** 测试连接结果：ok=true 即连通；否则 message 给出原因（Key 无效 / 不可达 / 模型不存在等）。 */
 export interface OmniTestResult {
   ok: boolean;
-  /** 机器码,前端按它本地化(ok/bad_key/not_found/rejected_authed/unreachable/no_key/http_error);缺省回退 message。 */
+  /** 机器码,前端按它本地化(ok/ok_model_found/bad_key/not_found/rejected_authed/unreachable/no_key/http_error);缺省回退 message。 */
   code?: string;
   status?: number;
   latency_ms?: number;

@@ -320,20 +320,6 @@ export async function listCameras(homeId?: HomeId): Promise<PerceptionCamera[]> 
   return impl.realListCameras();
 }
 
-// ── 事件反馈 ────────────────────────────────────────────────
-export async function submitEventFeedback(
-  eventId: string,
-  errorTypes: string[],
-  feedbackText: string,
-  includeGallery: boolean,
-): Promise<{ uploaded: boolean; upload_key?: string; pack_path: string; pack_size_bytes: number }> {
-  return impl.realSubmitEventFeedback(eventId, errorTypes, feedbackText, includeGallery);
-}
-
-export async function revealDir(path: string): Promise<void> {
-  return impl.realRevealDir(path);
-}
-
 // ── 让它休息 / 唤醒 ────────────────────────────────────────
 // backend 当前只有 stop/start 两态，永久暂停直到手动唤醒，不支持定时恢复。
 // 返回值 {resumesAt: null} 给 UI 留住"以后接定时恢复"的形状，但当前永远 null。
@@ -388,12 +374,6 @@ export async function deleteOmniConfig(
   ref: OmniProfileRef,
 ): Promise<OmniConfigState> {
   return impl.realDeleteOmniConfig(ref);
-}
-
-export async function deactivateOmniConfig(
-  ref: OmniProfileRef,
-): Promise<OmniConfigState> {
-  return impl.realDeactivateOmniConfig(ref);
 }
 
 export async function listOmniModels(input: {
@@ -552,35 +532,4 @@ export async function getMemorySeries(
   return apiFetch<MemorySeries>(
     `/api/monitor/memory/series?window=${w}&bucket=${bucket}`,
   );
-}
-
-// ─── Perception Config ─────────────────────────────────────────────────
-
-export interface PerceptionConfig {
-  video_short_edge: number;
-  omni_fps: number;
-  window_size: number;
-}
-
-export async function getPerceptionConfig(): Promise<PerceptionConfig> {
-  const r = await apiFetch<{ code: number; data: PerceptionConfig }>(
-    "/api/admin/perception-config",
-  );
-  return r.data;
-}
-
-// PUT 额外带 restart_ok：config 已写盘，但引擎重启可能失败（磁盘满/模型加载异常），
-// 前端据此区分「已生效」与「已保存但需手动重启」，不把后者误报成「保存失败」。
-export type UpdatePerceptionConfigResult = PerceptionConfig & {
-  restart_ok?: boolean;
-};
-
-export async function updatePerceptionConfig(
-  input: Partial<PerceptionConfig>,
-): Promise<UpdatePerceptionConfigResult> {
-  const r = await apiFetch<{ code: number; data: UpdatePerceptionConfigResult }>(
-    "/api/admin/perception-config",
-    { method: "PUT", body: JSON.stringify(input) },
-  );
-  return r.data;
 }

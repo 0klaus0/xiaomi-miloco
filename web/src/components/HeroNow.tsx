@@ -11,7 +11,6 @@ import type {
   ScopeCamera,
   UsageStats,
 } from "@/lib/types";
-import { cameraAvailable } from "@/lib/types";
 import { PersonChip } from "./PersonChip";
 import { LivePlayerPlaceholder } from "./LivePlayerPlaceholder";
 import { getUsageStats } from "@/api";
@@ -20,27 +19,6 @@ import { humanTokens } from "@/lib/formatTokens";
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { IconPencil, IconPlus, IconX } from "@/lib/icons";
-
-// 「关声音」确认弹窗的「不再提醒」持久化标记（与 web:theme / web:lang 同命名空间）。
-// 复位说明：清除站点数据 / localStorage 即恢复弹窗；本分支不做设置项 UI——将来若加
-// 隐私设置面板，一句 localStorage.removeItem(VOICE_ON_CONFIRMED_KEY) 即可重置。
-const VOICE_ON_CONFIRMED_KEY = "web:voiceOnConfirmed";
-
-function isVoiceOnConfirmed(): boolean {
-  try {
-    return localStorage.getItem(VOICE_ON_CONFIRMED_KEY) === "1";
-  } catch {
-    return false; // localStorage 不可用(隐私模式/测试桩)→ 每次仍确认,无害
-  }
-}
-
-function setVoiceOnConfirmed(): void {
-  try {
-    localStorage.setItem(VOICE_ON_CONFIRMED_KEY, "1");
-  } catch {
-    /* 写不了就算了：本会话每次仍弹确认,不影响功能 */
-  }
-}
 
 interface Props {
   persons: Person[];
@@ -226,22 +204,19 @@ function CameraSection({
   const activeCount = scopeCameras.filter((c) => c.inUse).length;
   const allOn = total > 0 && activeCount === total;
   const allOff = activeCount === 0;
-  // 满额判断按 inUse(=活跃集:未拉黑 + 三态好 + 上限内)计数,与后端 toggle_camera 的
-  // 上限校验同口径——后端也数「可用集」(离线/局域网不可达/镜头关的不占名额)。所以
-  // 面板显示的名额 = 后端认的名额,不会出现「看着有位、点开启却被后端拒」。
+  // 满额判断按 inUse 计数(与后端 toggle_camera 上限校验同口径):已启用的相机即便
+  // 掉线仍保留 inUse、占名额(允许态不被强制改),要腾名额得显式关掉它。
   const atCapacity = activeCount >= maxStreamCams;
-  // 「全开」只能开「可用且未投喂」的——不可用相机(云端离线/局域网不可达/镜头关)后端
-  // toggle_camera 会整批拒绝,若把它们塞进批量 enable,会连带可用的一起失败。
-  // 与下区单台开关「不可用不可开」同口径(cameraAvailable)。
+  // 「全开」只能开「在线且未投喂」的——离线相机后端 toggle_camera 会整批拒绝
+  // (offline_enable 校验),若把离线 did 也塞进批量 enable,会连带在线的一起失败。
+  // 与下区单台开关「离线不可开」同口径。
   const enableableDids = scopeCameras
-    .filter((c) => !c.inUse && cameraAvailable(c))
+    .filter((c) => !c.inUse && c.isOnline)
     .map((c) => c.did);
   // bulkBusy 锁防"全开/全关"连点;singleBusyDids 跟踪单卡 in-flight,让住户切单卡 A
   // 时只 disable A 卡,B/C/D 仍可点。bulk 操作进行时仍 disable 所有(防交叠)。
   const [bulkBusy, setBulkBusy] = useState(false);
   const [singleBusyDids, setSingleBusyDids] = useState<Set<string>>(new Set());
-  // 拾音开关独立 in-flight 集：拾音 PUT 走独立端点,与投喂 PUT 互不阻塞,分开跟踪。
-  const [voiceBusyDids, setVoiceBusyDids] = useState<Set<string>>(new Set());
   const runBulk = async (dids: string[], inUse: boolean) => {
     if (bulkBusy) return;
     setBulkBusy(true);
@@ -262,38 +237,6 @@ function CameraSection({
         n.delete(did);
         return n;
       });
-    }
-  };
-  const runSingleVoice = async (did: string, voiceInUse: boolean) => {
-    if (voiceBusyDids.has(did)) return;
-    setVoiceBusyDids((s) => new Set(s).add(did));
-    try {
-      await onToggleCameraVoice(did, voiceInUse);
-    } finally {
-      setVoiceBusyDids((s) => {
-        const n = new Set(s);
-        n.delete(did);
-        return n;
-      });
-    }
-  };
-  // 声音默认关（opt-in）：开启方向先弹一次知情提示，讲清可能的问题与适用场景；关闭
-  // 方向无害（只是停止处理声音），直接执行。待确认的相机存这里。用户勾「不再提醒」并
-  // 确认后，落 localStorage 标记，之后开声音直接执行、不再弹（批量开多台安静机位时不啰嗦）。
-  const [pendingVoiceOn, setPendingVoiceOn] = useState<{
-    did: string;
-    name: string;
-  } | null>(null);
-  const [dontRemind, setDontRemind] = useState(false);
-  const requestVoiceToggle = (did: string, name: string, next: boolean) => {
-    if (voiceBusyDids.has(did)) return;
-    if (!next) {
-      void runSingleVoice(did, false); // 关闭声音无需确认（无害）
-    } else if (isVoiceOnConfirmed()) {
-      void runSingleVoice(did, true); // 已选「不再提醒」→ 直接开
-    } else {
-      setDontRemind(false); // 每次开框默认不勾
-      setPendingVoiceOn({ did, name }); // 开启 → 知情提示
     }
   };
 
@@ -419,13 +362,13 @@ function CameraSection({
                   <BenchCamItem
                     key={c.did}
                     cam={c}
-                    // 不可用 + 未投喂 → 禁用(开不了);不可用 + 已投喂 → 仍可点(允许关闭)。
+                    // 离线 + 未投喂 → 禁用(开不了);离线 + 已投喂 → 仍可点(允许关闭)。
                     // 满额时也只挡「开启未启用的」,已启用的随时可关。即:仅当
-                    // 「当前未启用 且 (不可用 或 已满额)」时禁用,其余可点。
+                    // 「当前未投喂 且 (离线 或 已满额)」时禁用,其余可点。
                     disabled={
                       bulkBusy ||
                       singleBusyDids.has(c.did) ||
-                      (!c.inUse && (!cameraAvailable(c) || atCapacity))
+                      (!c.inUse && (!c.isOnline || atCapacity))
                     }
                     onToggle={(v) => runSingle(c.did, v)}
                     onEdit={
@@ -437,90 +380,6 @@ function CameraSection({
             </div>
           )}
         </>
-      )}
-
-      {/* 开声音知情提示：opt-in。讲清可能的问题 + 适用/不适用场景。复用居中弹窗形态。 */}
-      {pendingVoiceOn && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
-          onClick={
-            voiceBusyDids.has(pendingVoiceOn.did)
-              ? undefined
-              : () => setPendingVoiceOn(null)
-          }
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="voice-on-title"
-            className="w-[90%] max-w-sm bg-bg-secondary border border-border rounded-2xl shadow-lg p-6 anim-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2
-              id="voice-on-title"
-              className="text-title font-semibold text-text-primary mb-2"
-            >
-              {t("hero.voiceOnConfirmTitle", { name: pendingVoiceOn.name })}
-            </h2>
-            <p className="text-body text-text-secondary mb-3">
-              {t("hero.voiceOnConfirmIntro")}
-            </p>
-            {/* 可能的问题 + 适用/不适用场景：三行图标标记，一眼可辨。 */}
-            <ul className="flex flex-col gap-2 mb-5 text-body">
-              <li className="flex gap-2">
-                <span className="text-warning shrink-0" aria-hidden="true">⚠</span>
-                <span className="text-text-secondary">
-                  {t("hero.voiceOnConfirmRisk")}
-                </span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-success shrink-0" aria-hidden="true">✓</span>
-                <span className="text-text-secondary">
-                  {t("hero.voiceOnConfirmRecommend")}
-                </span>
-              </li>
-              <li className="flex gap-2">
-                <span className="text-error shrink-0" aria-hidden="true">✕</span>
-                <span className="text-text-secondary">
-                  {t("hero.voiceOnConfirmAvoid")}
-                </span>
-              </li>
-            </ul>
-            {/* 不再提醒：勾选并确认后落 localStorage,之后开声音直接执行、不再弹框。 */}
-            <label className="flex items-center gap-2 mb-5 text-body text-text-secondary cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={dontRemind}
-                onChange={(e) => setDontRemind(e.target.checked)}
-                className="h-4 w-4 rounded border-border accent-brand-primary cursor-pointer"
-              />
-              {t("hero.voiceOnConfirmDontRemind")}
-            </label>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setPendingVoiceOn(null)}
-                disabled={voiceBusyDids.has(pendingVoiceOn.did)}
-                className="text-body px-4 py-2 rounded-lg bg-bg-primary border border-border text-text-primary hover:border-border-strong disabled:opacity-60"
-              >
-                {t("hero.voiceOnConfirmCancel")}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const { did } = pendingVoiceOn;
-                  if (dontRemind) setVoiceOnConfirmed();
-                  setPendingVoiceOn(null);
-                  void runSingleVoice(did, true);
-                }}
-                disabled={voiceBusyDids.has(pendingVoiceOn.did)}
-                className="text-body px-4 py-2 rounded-lg font-semibold bg-brand-primary text-white hover:opacity-90 disabled:opacity-60"
-              >
-                {t("hero.voiceOnConfirmOk")}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </>
   );
@@ -560,68 +419,6 @@ function CamSwitch({
         }`}
       />
     </button>
-  );
-}
-
-/** 拾音开关（mic-off：关闭后此摄像头的声音完全不被处理——不监听、不转写、不上云）。
- *  从属于感知开关：相机感知关(inUse=false)时置灰、显示为「关」
- *  (生效态 = inUse && voiceInUse)；感知开时反映并编辑存储偏好 voiceInUse。
- *  与投喂开关(CamSwitch)并排,靠麦克风图标 + 文字标签区分,免得两个开关混淆。 */
-function VoiceSwitch({
-  on,
-  name,
-  disabled,
-  onToggle,
-}: {
-  on: boolean;
-  name: string;
-  disabled: boolean;
-  onToggle: (next: boolean) => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={t(on ? "hero.voiceAriaOn" : "hero.voiceAriaOff", { name })}
-      title={
-        disabled
-          ? t("hero.voiceTitleDisabled")
-          : on
-            ? t("hero.voiceTitleOn")
-            : t("hero.voiceTitleOff")
-      }
-      disabled={disabled}
-      onClick={() => onToggle(!on)}
-      className={`inline-flex items-center gap-1 h-[16px] pl-1 pr-1.5 rounded-full text-[10px] leading-none shadow-sm transition-colors focus-visible:ring-2 focus-visible:ring-brand-primary focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
-        on ? "bg-brand-primary text-white" : "bg-black/60 text-white/85"
-      }`}
-    >
-      <MicIcon muted={!on} />
-      <span>{t("hero.voiceLabel")}</span>
-    </button>
-  );
-}
-
-/** 小麦克风图标；muted=true 画一道斜杠,表示该相机拾音关闭（声音不被处理）。 */
-function MicIcon({ muted }: { muted: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className="h-3 w-3 shrink-0"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <rect x="9" y="3" width="6" height="11" rx="3" />
-      <path d="M5 11a7 7 0 0 0 14 0" />
-      <path d="M12 18v3" />
-      {muted && <path d="M4 4l16 16" />}
-    </svg>
   );
 }
 
@@ -671,7 +468,7 @@ function CamCardWithToggle({ cam, channel, bulkBusy, onToggle, onEdit }: CamCard
   );
 }
 
-/** 下区横条行（日志页风格）：摄像头信息 + 拾音/投喂开关，无小窗。投喂 on → 升入上区。 */
+/** 下区横条行（日志页风格）：摄像头信息 + 投喂开关，无小窗。开关 on → 升入上区投喂。 */
 function BenchCamItem({
   cam,
   disabled,
@@ -687,7 +484,7 @@ function BenchCamItem({
   return (
     <li className="px-4 py-3 flex items-center justify-between gap-3 hover:bg-bg-tertiary transition-colors">
       <div className="min-w-0">
-        {/* 不可用相机名字淡化,跟开关禁用呼应——不可用就别让住户以为点一下能投喂。 */}
+        {/* 离线相机名字淡化,跟开关禁用呼应——离线就别让住户以为点一下能投喂。 */}
         <div
           className={`text-body truncate inline-flex items-center gap-2 ${
             cam.isOnline ? "text-text-primary" : "text-text-tertiary"
@@ -696,52 +493,15 @@ function BenchCamItem({
           <span className="truncate">{cam.name}</span>
           {cam.source === "rtsp" && <SourceTag />}
         </div>
-        {/* 三个并列的可用性指标:云端在线 / 局域网可达 / 镜头开关。各自独立好坏,
-            住户能一眼看出到底卡在哪一环,不再一把揉成"离线"。 */}
-        <div className="text-caption flex items-center flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
-          <StateDot
-            ok={cam.cloudOnline}
-            label={
-              cam.cloudOnline
-                ? t("hero.stateCloudOnline")
-                : t("hero.stateCloudOffline")
-            }
-          />
-          <StateDot
-            ok={cam.lanReachable}
-            label={
-              cam.lanReachable ? t("hero.stateLanOk") : t("hero.stateLanOffline")
-            }
-          />
-          <StateDot
-            ok={cam.awake === null ? "unknown" : cam.awake}
-            label={
-              cam.awake === false
-                ? t("hero.stateSleeping")
-                : cam.awake === null
-                  ? t("hero.stateAwakeUnknown")
-                  : t("hero.stateAwake")
-            }
-          />
-          {cam.roomName && (
-            <span className="text-text-tertiary">· {cam.roomName}</span>
-          )}
-        </div>
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        {/* 拾音开关从属于感知:相机未启用(inUse=false)时置灰、显示为关。 */}
-        <VoiceSwitch
-          on={cam.inUse && cam.voiceInUse}
-          name={cam.name}
-          disabled={!cam.inUse || voiceBusy}
-          onToggle={onToggleVoice}
-        />
-        <CamSwitch
-          inUse={cam.inUse}
-          name={cam.name}
-          disabled={disabled}
-          onToggle={onToggle}
-        />
+        {(!cam.isOnline || cam.roomName) && (
+          <div className="text-caption text-text-tertiary truncate">
+            {!cam.isOnline && (
+              <span className="text-warning">{t("hero.benchOffline")}</span>
+            )}
+            {!cam.isOnline && cam.roomName ? " · " : ""}
+            {cam.roomName}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {onEdit && (

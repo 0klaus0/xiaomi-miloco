@@ -39,35 +39,13 @@ const DEFAULT_CAPABILITIES: OmniCapability[] = ["text", "image", "video", "audio
 // 未命中(如 http_error,含动态 HTTP 细节)回退后端 message。
 const OMNI_CODE_KEY: Record<string, string> = {
   ok: "usage.testOk",
+  ok_model_found: "usage.testOkModelFound",
   bad_key: "usage.testBadKey",
   not_found: "usage.testNotFound",
   rejected_authed: "usage.testRejectedAuthed",
   unreachable: "usage.testUnreachable",
   no_key: "usage.testNoKey",
-  http_error: "usage.testHttpError",
 };
-
-// 测试结果三档语义:连接正常(✓ 绿,chat 调通)/ 鉴权过但探测被拒(⚠ 黄,rejected_authed)/ 失败(✗ 红)。
-const TEST_WARN_CODES = new Set(["rejected_authed"]);
-type Severity = "ok" | "warn" | "error";
-function severityOf(res: OmniTestResult): Severity {
-  if (res.code && TEST_WARN_CODES.has(res.code)) return "warn";
-  return res.ok ? "ok" : "error";
-}
-const SEV_GLYPH: Record<Severity, string> = { ok: "✓", warn: "⚠", error: "✗" };
-const SEV_CLASS: Record<Severity, string> = {
-  ok: "text-success",
-  warn: "text-warning",
-  error: "text-error",
-};
-
-// 拉模型/测试失败的机器码 → 该错误属于哪个表单字段(就近显示,而非全堆模型框下)。
-// key 类(鉴权)→ API Key;可达性/地址类 → Base URL;其余(空结果/未知)→ 模型框。
-function errFieldOf(code: string | null): "url" | "key" | "model" {
-  if (code === "bad_key" || code === "no_key") return "key";
-  if (code === "unreachable" || code === "http_error" || code === "not_found") return "url";
-  return "model";
-}
 
 function hostOf(url: string): string {
   try {
@@ -174,12 +152,11 @@ export function UsageOmniConfig() {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false); // 默认展开
 
-  // 新增 / 编辑表单(共用):editing 非空表示在编辑该 label 对应的已有配置
+  // 新增表单
   const [adding, setAdding] = useState(false);
   const [editingLabel, setEditingLabel] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [showKey, setShowKey] = useState(false); // API Key 明文/密文切换(末端眼睛图标)
   const [model, setModel] = useState("");
   const [models, setModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -194,16 +171,6 @@ export function UsageOmniConfig() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<OmniTestResult | null>(null);
-  // 列表行内「测试」:正在测的 label + 各行结果
-  const [rowTesting, setRowTesting] = useState<string | null>(null);
-  const [rowTestResults, setRowTestResults] = useState<Record<string, OmniTestResult>>({});
-  const [activating, setActivating] = useState<string | null>(null); // 正在「启用前测试+启用」的 label
-  const [deactivating, setDeactivating] = useState<string | null>(null); // 正在「停用」的 label
-  // 连接状态列被截断时,锚定元素底部的全文浮层(fixed 定位,免原生 title 延迟、不被表格 overflow 裁剪)
-  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
-  // 删除确认弹窗(web 风格,代替 window.confirm):待删项 + 删除中
-  const [deleteTarget, setDeleteTarget] = useState<OmniProfile | null>(null);
-  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     void load();
@@ -234,7 +201,6 @@ export function UsageOmniConfig() {
     setEditingLabel(null);
     setBaseUrl("");
     setApiKey("");
-    setShowKey(false);
     setModel("");
     setModels([]);
     setModelsMsg(null);
@@ -301,14 +267,8 @@ export function UsageOmniConfig() {
     if (!bu.trim()) return;
     setModelsLoading(true);
     setModelsMsg(null);
-    setModelsErr(false);
-    setModelsErrCode(null);
     try {
-      const res = await listOmniModels({
-        base_url: bu.trim(),
-        api_key: key.trim() || undefined,
-        label: label || undefined,
-      });
+      const res = await listOmniModels({ base_url: bu.trim(), api_key: key.trim() || undefined });
       if (res.ok) {
         setModels(res.models);
         if (!res.models.length) setModelsMsg(t("usage.modelsEmptyResult"));
@@ -316,14 +276,10 @@ export function UsageOmniConfig() {
         setModels([]);
         const k = res.code ? OMNI_CODE_KEY[res.code] : undefined;
         setModelsMsg(k ? t(k) : res.message || t("usage.modelsFetchFailed"));
-        setModelsErr(true);
-        setModelsErrCode(res.code ?? null);
       }
     } catch (e) {
       setModels([]);
       setModelsMsg(e instanceof Error ? e.message : t("usage.modelsFetchFailed"));
-      setModelsErr(true);
-      setModelsErrCode("unreachable"); // 网络/解析异常归为 Base URL 不可达
     } finally {
       setModelsLoading(false);
     }
@@ -365,11 +321,6 @@ export function UsageOmniConfig() {
     }
   }
 
-  // 按 label 找列表里的条目(用于「留空不改 key」的 has_key 判断)
-  function editTarget(label: string | null | undefined): OmniProfile | undefined {
-    return label ? profiles.find((p) => p.label === label) : undefined;
-  }
-
   async function onTest() {
     const bu = baseUrl.trim();
     const m = model.trim();
@@ -401,66 +352,12 @@ export function UsageOmniConfig() {
   async function onDelete(p: OmniProfile) {
     if (!window.confirm(t("usage.deleteConfirm", { model: p.model, host: hostOf(p.base_url) }))) return;
     try {
-      setState(await deactivateOmniConfig({ label: p.label }));
-      toast(t("usage.deactivateSuccess"), "ok");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : t("usage.deactivateFailed"), "danger");
-    } finally {
-      setDeactivating(null);
-    }
-  }
-
-  // 实际删除(由弹窗「删除」按钮触发);删的若是当前生效项,后端会软停感知并回到未配态。
-  async function confirmDelete() {
-    const p = deleteTarget;
-    if (!p) return;
-    setDeleting(true);
-    try {
       setState(await deleteOmniConfig({ label: p.label }));
-      setRowTestResults((m) => {
-        const next = { ...m };
-        delete next[p.label];
-        return next;
-      });
       toast(t("usage.deleteSuccess"), "ok");
-      setDeleteTarget(null);
     } catch (e) {
       toast(e instanceof Error ? e.message : t("usage.deleteFailed"), "danger");
-    } finally {
-      setDeleting(false);
     }
   }
-
-  // 连接状态列被截断时的悬浮全文:锚定元素底部的 fixed 浮层(避开表格 overflow 裁剪、无原生 title 延迟)。
-  function showTip(e: React.MouseEvent<HTMLElement>) {
-    const el = e.currentTarget;
-    if (el.scrollWidth > el.clientWidth) {
-      const r = el.getBoundingClientRect();
-      setTip({ text: el.textContent ?? "", x: r.left, y: r.bottom + 4 });
-    }
-  }
-  function hideTip() {
-    setTip(null);
-  }
-
-  // 测试结果的本地化文案(无图标/延迟);供「不可启用」toast 与状态列共用。
-  function testReason(res: OmniTestResult): string {
-    const k = res.code ? OMNI_CODE_KEY[res.code] : undefined;
-    return k ? t(k) : res.message;
-  }
-
-  // 测试结果统一展示文案(✓/⚠/✗ + 本地化 + 延迟);行内状态列与表单底部共用,避免两处渲染漂移。
-  function testResultText(res: OmniTestResult): string {
-    const lat = res.latency_ms != null ? ` · ${res.latency_ms}ms` : "";
-    return `${SEV_GLYPH[severityOf(res)]} ${testReason(res)}${lat}`;
-  }
-
-  // 表单内拉模型/测试错误的就近显示:解析当前编辑/命中条目 + 错误归属字段。
-  const keyProfile = editTarget(editing) ?? existing;
-  const errField = modelsErr ? errFieldOf(modelsErrCode) : null;
-  const urlErrHere = errField === "url";
-  const keyErrHere = errField === "key";
-  const modelErrHere = errField === "model";
 
   return (
     <section
@@ -513,8 +410,7 @@ export function UsageOmniConfig() {
                       <th className="text-left px-3 py-2">{t("usage.baseUrlLabel")}</th>
                       <th className="text-left px-3 py-2">{t("usage.colRoute")}</th>
                       <th className="text-left px-3 py-2">{t("usage.colApiKey")}</th>
-                      <th className="text-left px-3 py-2 w-44">{t("usage.colStatus")}</th>
-                      <th className="text-left px-5 md:px-6 py-2">{t("usage.colAction")}</th>
+                      <th className="text-right px-5 md:px-6 py-2">{t("usage.colAction")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -532,11 +428,6 @@ export function UsageOmniConfig() {
                         <tr key={p.label} className="border-b border-border last:border-b-0">
                           <td className="px-5 md:px-6 py-2.5 num text-text-primary">
                             {p.model}
-                            {p.active && (
-                              <span className="ml-2 align-middle inline-block rounded px-1.5 py-0.5 bg-brand-primary text-white text-caption">
-                                {t("usage.activeTag")}
-                              </span>
-                            )}
                           </td>
                           <td className="px-3 py-2.5 num text-text-tertiary">{p.base_url}</td>
                           <td className="px-3 py-2.5">
@@ -612,49 +503,28 @@ export function UsageOmniConfig() {
                         setBaseUrl(e.target.value);
                         setTestResult(null);
                       }}
-                      onBlur={() => fetchModels(baseUrl, apiKey, editing)}
+                      onBlur={() => fetchModels(baseUrl, apiKey)}
                       placeholder={t("usage.baseUrlPlaceholder")}
                       className={INPUT_CLS}
                     />
-                    {urlErrHere && (
-                      <span className="text-caption mt-1 block text-error">✗ {modelsMsg}</span>
-                    )}
                   </Field>
                   <Field label={t("usage.apiKeyLabel")}>
-                    <div className="relative">
-                      <input
-                        type={showKey ? "text" : "password"}
-                        value={apiKey}
-                        onChange={(e) => {
-                          setApiKey(e.target.value);
-                          setTestResult(null);
-                        }}
-                        onBlur={() => fetchModels(baseUrl, apiKey, editing)}
-                        placeholder={
-                          keyProfile?.has_key
-                            ? t("usage.apiKeyPlaceholderExisting")
-                            : t("usage.apiKeyPlaceholderNew")
-                        }
-                        autoComplete="off"
-                        className={INPUT_CLS + " pr-10"}
-                      />
-                      {/* 明文/密文切换:密文态睁眼(点击显示),明文态闭眼(点击隐藏) */}
-                      <button
-                        type="button"
-                        onClick={() => setShowKey((s) => !s)}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-text-tertiary hover:text-text-secondary"
-                        aria-label={showKey ? t("usage.hideKey") : t("usage.revealKey")}
-                      >
-                        {showKey ? <IconEyeOff /> : <IconEye />}
-                      </button>
-                    </div>
-                    {keyErrHere ? (
-                      <span className="text-caption mt-1 block text-error">✗ {modelsMsg}</span>
-                    ) : keyProfile?.has_key ? (
-                      <span className="text-caption mt-1 block text-text-tertiary num">
-                        {t("usage.apiKeyCurrentHint", { masked: keyProfile.api_key_masked })}
-                      </span>
-                    ) : null}
+                    <input
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => {
+                        setApiKey(e.target.value);
+                        setTestResult(null);
+                      }}
+                      onBlur={() => fetchModels(baseUrl, apiKey)}
+                      placeholder={
+                        existing?.has_key
+                          ? t("usage.apiKeyPlaceholderExisting")
+                          : t("usage.apiKeyPlaceholderNew")
+                      }
+                      autoComplete="off"
+                      className={INPUT_CLS}
+                    />
                   </Field>
                   <Field label={t("usage.modelLabel")}>
                     <ComboBox
@@ -671,20 +541,14 @@ export function UsageOmniConfig() {
                       }
                       ariaLabel={t("usage.modelLabel")}
                     />
-                    <span
-                      className={`text-caption mt-1 block ${
-                        modelErrHere ? "text-error" : "text-text-tertiary"
-                      }`}
-                    >
+                    <span className="text-caption text-text-tertiary mt-1 block">
                       {modelsLoading
                         ? t("usage.modelsFetching")
-                        : modelErrHere
-                          ? `✗ ${modelsMsg}`
-                          : !modelsErr && modelsMsg
-                            ? modelsMsg
-                            : models.length
-                              ? t("usage.modelsCount", { n: models.length })
-                              : t("usage.modelsHint")}
+                        : modelsMsg
+                          ? modelsMsg
+                          : models.length
+                            ? t("usage.modelsCount", { n: models.length })
+                            : t("usage.modelsHint")}
                     </span>
                   </Field>
                   <Field label={t("usage.routeEnabledLabel")}>
@@ -724,7 +588,7 @@ export function UsageOmniConfig() {
                       type="button"
                       onClick={onSave}
                       disabled={saving || testing}
-                      className="text-caption px-3 py-1.5 rounded-lg bg-brand-primary text-white hover:opacity-90 disabled:opacity-60"
+                      className="px-5 py-2 rounded-lg bg-brand-primary text-white hover:opacity-90 disabled:opacity-60"
                     >
                       {saving ? t("usage.saving") : t("usage.save")}
                     </button>
@@ -732,7 +596,7 @@ export function UsageOmniConfig() {
                       type="button"
                       onClick={onTest}
                       disabled={saving || testing}
-                      className="text-caption px-3 py-1.5 rounded-lg bg-bg-secondary border border-border text-text-primary hover:border-brand-primary disabled:opacity-60"
+                      className="px-5 py-2 rounded-lg bg-bg-secondary border border-border text-text-primary hover:border-brand-primary disabled:opacity-60"
                     >
                       {testing ? t("usage.testing") : t("usage.testConnection")}
                     </button>
@@ -744,13 +608,19 @@ export function UsageOmniConfig() {
                         setTestResult(null);
                       }}
                       disabled={saving || testing}
-                      className="text-caption px-3 py-1.5 rounded-lg text-text-tertiary hover:text-text-primary"
+                      className="px-3 py-2 rounded-lg text-caption text-text-tertiary hover:text-text-primary"
                     >
                       {t("usage.cancel")}
                     </button>
                     {testResult && (
-                      <span className={`text-caption ${SEV_CLASS[severityOf(testResult)]}`}>
-                        {testResultText(testResult)}
+                      <span
+                        className={`text-caption ${testResult.ok ? "text-success" : "text-error"}`}
+                      >
+                        {testResult.ok ? "✓" : "✗"}{" "}
+                        {testResult.code && OMNI_CODE_KEY[testResult.code]
+                          ? t(OMNI_CODE_KEY[testResult.code])
+                          : testResult.message}
+                        {testResult.latency_ms != null ? ` · ${testResult.latency_ms}ms` : ""}
                       </span>
                     )}
                   </div>
@@ -758,77 +628,6 @@ export function UsageOmniConfig() {
               )}
             </>
           )}
-        </div>
-      )}
-
-      {/* 连接状态列截断时的全文浮层:fixed 锚定元素底部,瞬时出现、不被表格 overflow 裁剪 */}
-      {tip && (
-        <div
-          className="fixed z-[70] max-w-xs rounded-md bg-bg-secondary border border-border shadow-md px-2.5 py-1.5 text-caption text-text-primary pointer-events-none"
-          style={{ left: tip.x, top: tip.y }}
-        >
-          {tip.text}
-        </div>
-      )}
-
-      {/* 删除确认弹窗(web 风格,代替浏览器原生 confirm)。删当前生效项时追加红色警告:会停感知。 */}
-      {deleteTarget && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40"
-          onClick={() => {
-            if (!deleting) setDeleteTarget(null);
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="w-[90%] max-w-md bg-bg-secondary border border-border rounded-2xl shadow-lg p-6 anim-in"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start justify-between mb-3">
-              <h2 className="text-title font-semibold text-text-primary">
-                {t("usage.deleteDialogTitle")}
-              </h2>
-              <button
-                type="button"
-                onClick={() => setDeleteTarget(null)}
-                disabled={deleting}
-                aria-label={t("usage.cancel")}
-                className="rounded-full p-1 text-text-secondary hover:text-text-primary disabled:opacity-50"
-              >
-                <IconX />
-              </button>
-            </div>
-            <p className="text-body text-text-secondary">
-              {t("usage.deleteConfirm", {
-                model: deleteTarget.model,
-                host: hostOf(deleteTarget.base_url),
-              })}
-            </p>
-            {deleteTarget.active && (
-              <p className="text-caption text-error bg-error-bg rounded-lg px-3 py-2 mt-3">
-                {t("usage.deleteActiveWarning")}
-              </p>
-            )}
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setDeleteTarget(null)}
-                disabled={deleting}
-                className="text-body px-4 py-2 rounded-lg bg-bg-primary border border-border text-text-primary hover:border-border-strong disabled:opacity-60"
-              >
-                {t("usage.cancel")}
-              </button>
-              <button
-                type="button"
-                onClick={confirmDelete}
-                disabled={deleting}
-                className="text-body px-4 py-2 rounded-lg bg-error text-white hover:bg-error/90 disabled:opacity-60"
-              >
-                {deleting ? t("usage.deleting") : t("usage.delete")}
-              </button>
-            </div>
-          </div>
         </div>
       )}
     </section>

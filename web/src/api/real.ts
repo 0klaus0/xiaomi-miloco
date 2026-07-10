@@ -923,15 +923,8 @@ interface BackendScopeCamera {
   source?: "miot" | "rtsp";
   url?: string;
   room_name?: string | null;
-  // 三个正交可用性指标。旧后端只有 is_online 时用它兜底 cloud+lan。
-  cloud_online?: boolean;
-  lan_reachable?: boolean;
-  awake?: boolean | null;
   is_online: boolean;
   in_use: boolean;
-  // 拾音存储偏好（在拾音白名单即 true，**默认 false**，opt-in）。false = 该相机声音
-  // 完全不被处理。旧后端无此字段时兜底 false（默认关，与后端默认姿态一致）。
-  voice_in_use?: boolean;
   connected: boolean;
 }
 
@@ -945,12 +938,8 @@ export async function realListScopeCameras(): Promise<ScopeCamera[]> {
     source: c.source ?? "miot",
     url: c.url,
     roomName: c.room_name ?? undefined,
-    // 旧后端无三指标时用 is_online 兜底：cloud/lan 都取 is_online、awake 未知。
-    cloudOnline: c.cloud_online ?? c.is_online,
-    lanReachable: c.lan_reachable ?? c.is_online,
-    awake: c.awake ?? null,
+    isOnline: c.is_online,
     inUse: c.in_use,
-    voiceInUse: c.voice_in_use ?? false,
     connected: c.connected,
   }));
 }
@@ -1032,23 +1021,6 @@ export async function realToggleScopeCamera(
   invalidateMiotHomeCache();
 }
 
-// 拾音开关走独立端点 PUT /api/miot/scope/cameras/voice（不复用相机启用端点：
-// 拾音无投喂上限/离线校验、不重启感知引擎）。关闭 = mic-off：该相机声音完全不被处理
-// （引擎入口剥离音频）。后端只接受对 in_use=true 相机的设置,
-// 感知已关闭的相机会被拒（前端已把其开关置灰,这是二次兜底）。
-// 不 invalidate homeCache:拾音状态只存在于 /scope/cameras,调用方 reload scopeCameras 即可。
-export async function realToggleScopeCameraVoice(
-  dids: string[],
-  voiceInUse: boolean,
-): Promise<void> {
-  await apiFetch<Normal<unknown>>("/api/miot/scope/cameras/voice", {
-    method: "PUT",
-    body: JSON.stringify({
-      items: dids.map((did) => ({ did, voice_in_use: voiceInUse })),
-    }),
-  });
-}
-
 // ── 今天发生了什么(meaningful_events)───────────────────────
 
 /** GET /api/events 返回单元(对齐后端 MeaningfulEvent Pydantic 模型). */
@@ -1099,10 +1071,6 @@ export async function realListActivity(opts?: {
       device_ids: e.device_ids,
       rule_names: e.rule_names,
       clip_kind: e.clip_kind,
-      has_trace: e.has_trace,
-      has_feedback: e.has_feedback,
-      feedback_pack_path: e.feedback_pack_path,
-      feedback_pack_size: e.feedback_pack_size,
     }),
   );
 }
@@ -1187,51 +1155,12 @@ export function realSubscribeEvents(
         device_ids: payload.device_ids,
         rule_names: payload.rule_names,
         clip_kind: payload.clip_kind,
-        has_trace: payload.has_trace,
-        has_feedback: payload.has_feedback,
-        feedback_pack_path: payload.feedback_pack_path,
-        feedback_pack_size: payload.feedback_pack_size,
       });
     } catch {
       // ignore malformed payload
     }
   });
   return () => es.close();
-}
-
-// ── 事件反馈 ────────────────────────────────────────────────
-export async function realSubmitEventFeedback(
-  eventId: string,
-  errorTypes: string[],
-  feedbackText: string,
-  includeGallery: boolean,
-): Promise<{ uploaded: boolean; upload_key?: string; pack_path: string; pack_size_bytes: number }> {
-  const resp = await apiFetch<
-    Normal<{ event_id: string; pack_path: string; pack_size_bytes: number; uploaded: boolean; upload_key: string | null }>
-  >("/api/admin/events/feedback", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      event_id: eventId,
-      error_types: errorTypes,
-      feedback_text: feedbackText,
-      include_gallery: includeGallery,
-    }),
-  });
-  return {
-    uploaded: resp.data.uploaded,
-    upload_key: resp.data.upload_key ?? undefined,
-    pack_path: resp.data.pack_path,
-    pack_size_bytes: resp.data.pack_size_bytes,
-  };
-}
-
-export async function realRevealDir(path: string): Promise<void> {
-  await apiFetch<Normal<null>>("/api/admin/reveal-dir", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  });
 }
 
 // ── 让它休息 / 唤醒 ────────────────────────────────────────
@@ -1531,17 +1460,6 @@ export async function realDeleteOmniConfig(
 ): Promise<OmniConfigState> {
   const r = await apiFetch<Normal<OmniConfigState>>(
     "/api/admin/omni-config/delete",
-    { method: "POST", body: JSON.stringify(ref) },
-  );
-  return r.data;
-}
-
-// 停用当前生效模型:回未配态 + 软停感知,但保留档案(可再启用)。
-export async function realDeactivateOmniConfig(
-  ref: OmniProfileRef,
-): Promise<OmniConfigState> {
-  const r = await apiFetch<Normal<OmniConfigState>>(
-    "/api/admin/omni-config/deactivate",
     { method: "POST", body: JSON.stringify(ref) },
   );
   return r.data;
