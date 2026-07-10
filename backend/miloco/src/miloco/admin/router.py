@@ -20,7 +20,6 @@ from pydantic import BaseModel, Field, StrictBool
 
 from miloco.admin import log_pack as _log_pack_mod
 from miloco.config import get_settings
-from miloco.config.settings import ModelCapability
 from miloco.database.token_usage_repo import get_token_usage_repo
 from miloco.manager import get_manager
 from miloco.middleware import verify_token
@@ -446,40 +445,44 @@ def _full_omni_payload() -> dict:
     """
     m = get_settings().model
     active = m.omni
-
-    def _profile_payload(p, *, active_flag: bool | None = None) -> dict:
-        payload = {
+    profiles = [
+        {
             "label": p.label,
             "model": p.model,
             "base_url": p.base_url,
             "api_key_masked": _mask_api_key(p.api_key),
             "has_key": bool(p.api_key),
-            "enabled": p.enabled,
-            "capabilities": list(p.capabilities),
+            "active": p.label == active.label,
         }
-        if active_flag is not None:
-            payload["active"] = active_flag
-        return payload
-
+        for p in m.omni_profiles
+    ]
+    # 仅当 active 真有 key(确有模型在跑)、且未出现在档案列表时才合成补入并标 active。
+    # 无 key 态(出厂未配 / 删当前生效后回到未配)不合成 —— 列表呈现为空 + 顶部「未配 key」
+    # 警告,清楚表达「没有模型在跑」,而不是显示一条诡异的无 key 行。
+    if active.api_key and not any(p["active"] for p in profiles):
+        profiles.insert(0, {
+            "label": _active_display_label(),  # 空 label 回退 model@base_url,保证可编辑/删除
+            "model": active.model,
+            "base_url": active.base_url,
+            "api_key_masked": _mask_api_key(active.api_key),
+            "has_key": True,
+            "active": True,
+        })
     return {
-        "active": _profile_payload(active),
-        "profiles": [
-            _profile_payload(p, active_flag=p.label == active.label)
-            for p in m.omni_profiles
-        ],
+        "active": {
+            "label": active.label,
+            "model": active.model,
+            "base_url": active.base_url,
+            "api_key_masked": _mask_api_key(active.api_key),
+            "has_key": bool(active.api_key),
+        },
+        "profiles": profiles,
     }
 
 
 def _profiles_as_dicts() -> list[dict]:
     return [
-        {
-            "label": p.label,
-            "model": p.model,
-            "base_url": p.base_url,
-            "api_key": p.api_key,
-            "enabled": p.enabled,
-            "capabilities": list(p.capabilities),
-        }
+        {"label": p.label, "model": p.model, "base_url": p.base_url, "api_key": p.api_key}
         for p in get_settings().model.omni_profiles
     ]
 
@@ -489,8 +492,6 @@ class OmniConfigBody(BaseModel):
     base_url: str
     model: str
     api_key: str | None = None  # 留空 = 沿用该档案原 key(不被打码值覆盖)
-    enabled: bool = True
-    capabilities: list[ModelCapability] | None = None
     original_label: str | None = None  # 正在编辑的档案原名(支持改名/定位);None=新增
     activate: bool = True  # True=同时设为当前生效;False=只入列表(激活由 /activate 负责)
 
@@ -539,17 +540,7 @@ def put_omni_config(body: OmniConfigBody, current_user: str = Depends(verify_tok
     if clash:
         raise HTTPException(status_code=409, detail=f"档案名「{label}」已存在")
     key = _key_by_label(orig or label, body.api_key)
-    capabilities = body.capabilities
-    if capabilities is None and target:
-        capabilities = target.get("capabilities")
-    entry = {
-        "label": label,
-        "base_url": base_url,
-        "model": model,
-        "api_key": key,
-        "enabled": body.enabled,
-        "capabilities": capabilities or ["text", "image", "video", "audio"],
-    }
+    entry = {"label": label, "base_url": base_url, "model": model, "api_key": key}
     if target:
         profiles[profiles.index(target)] = entry
     else:
@@ -581,8 +572,6 @@ def activate_omni_config(body: OmniSelectBody, current_user: str = Depends(verif
                         "model": p.model,
                         "base_url": p.base_url,
                         "api_key": p.api_key,
-                        "enabled": p.enabled,
-                        "capabilities": list(p.capabilities),
                     }
                 }
             )
