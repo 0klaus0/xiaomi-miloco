@@ -313,9 +313,9 @@ class PipelineProcessor:
             # sink value 是 (payload, kind) — kind ∈ {"mp4","m4a","frames"}
             # 区分视频/audio-only/抽帧图片路径,
             # 持久化层据此选 clip.mp4 / clip.m4a 扩展名 + 服务端选 Content-Type.
-            from miloco.perception.snapshot_context import ClipKind, FrameClip
+            from miloco.perception.snapshot_context import OmniEventArtifacts
 
-            clips_by_device: dict[str, tuple[bytes | list[FrameClip], ClipKind]] = {}
+            artifacts = OmniEventArtifacts()
             try:
                 result, early_sent_contents, early_sent_rule_ids, early_sent_sugg_ids = await self._perception_engine_proxy.realtime_perceive(
                     batch, artifacts=artifacts
@@ -358,9 +358,11 @@ class PipelineProcessor:
             # 视频路径 mp4 = H264+AAC;audio-only 路径 mp4 = 纯 AAC m4a 容器.
             # engine 异常 / 全 device gate skipped → artifacts.clips 为空,device_ids=[] →
             # _persist 仍入表(metadata-only)给 UI 显示语义提示,但不落盘.
-            clips_to_save: dict[str, tuple[bytes | list[FrameClip], ClipKind]] = {}
-            if not result.skipped:
-                clips_to_save = {
+            # 同 batch 内空字节的 device 被过滤掉(payload[0] 真值判).
+            if result.skipped:
+                artifacts.clips.clear()
+            else:
+                artifacts.clips = {
                     did: payload
                     for did, payload in artifacts.clips.items()
                     if payload[0]
@@ -669,3 +671,4 @@ class PipelineProcessor:
             except Exception as e:
                 logger.error("[processor] 主动查询感知失败 | %s", e, exc_info=True)
                 return None
+
