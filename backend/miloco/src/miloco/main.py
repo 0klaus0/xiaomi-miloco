@@ -61,6 +61,7 @@ from miloco.perception.events_router import router as events_router
 from miloco.perception.router import router as perception_router
 from miloco.person.router import router as person_router
 from miloco.rule.router import router as rule_router
+from miloco.rtsp.router import router as rtsp_router
 from miloco.task.router import router as task_router
 from miloco.task_record.router import router as task_record_router
 from miloco.utils.common import escape_for_js_string
