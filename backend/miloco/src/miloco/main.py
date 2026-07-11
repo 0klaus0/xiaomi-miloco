@@ -20,13 +20,8 @@ from urllib.parse import parse_qsl, urlencode
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import (
-    FileResponse,
-    HTMLResponse,
-    JSONResponse,
-    RedirectResponse,
-)
-
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse)
 from miloco.admin.router import router as admin_router
 from miloco.config import get_settings, register_reset_hook
 from miloco.database.connector import init_database
@@ -41,26 +36,23 @@ from miloco.node_monitor.resource_monitor import ResourceMonitor
 from miloco.node_monitor.router import router as monitor_router
 from miloco.node_monitor.router import set_resource_monitor
 from miloco.node_monitor.watchdog import WatchdogTask
-from miloco.observability.agent_meta_poller import (
-    AgentMetaPoller,
-    set_agent_meta_poller,
-)
-from miloco.observability.cleanup import (
-    cleanup_agent_runs_table,
-    cleanup_events_table,
-    cleanup_trace_jsonl,
-    cleanup_traces_device_table,
-    cleanup_traces_table,
-)
-from miloco.observability.metrics_client import MetricsClient, set_metrics_client
+from miloco.observability.agent_meta_poller import (AgentMetaPoller,
+                                                    set_agent_meta_poller)
+from miloco.observability.cleanup import (cleanup_agent_runs_table,
+                                          cleanup_events_table,
+                                          cleanup_trace_jsonl,
+                                          cleanup_traces_device_table,
+                                          cleanup_traces_table)
+from miloco.observability.metrics_client import (MetricsClient,
+                                                 set_metrics_client)
 from miloco.observability.metrics_db import connect as obs_connect
 from miloco.observability.metrics_db import init_schema as obs_init_schema
 from miloco.observability.router import router as observability_router
 from miloco.perception.events_router import router as events_router
 from miloco.perception.router import router as perception_router
 from miloco.person.router import router as person_router
-from miloco.rule.router import router as rule_router
 from miloco.rtsp.router import router as rtsp_router
+from miloco.rule.router import router as rule_router
 from miloco.task.router import router as task_router
 from miloco.task_record.router import router as task_record_router
 from miloco.utils.common import escape_for_js_string
@@ -176,10 +168,8 @@ async def _rollover_daily_loop() -> None:
     """
     from datetime import datetime as _dt
 
-    from miloco.task_record.rollover import (
-        rollover_daily_job,
-        seconds_until_next_run,
-    )
+    from miloco.task_record.rollover import (rollover_daily_job,
+                                             seconds_until_next_run)
     from miloco.task_record.service import TaskRecordService
     from miloco.utils.time_utils import deploy_timezone
 
@@ -249,7 +239,8 @@ async def _backfill_tier_a_reid_embeddings() -> None:
     引擎不写, 与实时写库无锁竞争; tier_c 由实时引擎写时即带 emb, 无需在此 backfill。
     """
     try:
-        from miloco.perception.engine.identity.engine import build_identity_library
+        from miloco.perception.engine.identity.engine import \
+            build_identity_library
         extractor = get_manager().perception_service.get_reid_extractor()
         if extractor is None:
             logger.info("启动 backfill tier_a ReID emb 跳过: 无可用 ReID extractor")
