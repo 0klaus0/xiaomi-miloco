@@ -10,6 +10,12 @@ from miloco.schema.common_schema import NormalResponse
 router = APIRouter(prefix="/miot", tags=["RTSP Cameras"])
 
 
+@router.get("/rtsp_cameras", response_model=NormalResponse)
+async def list_rtsp_cameras(current_user: str = Depends(verify_token)):
+    records = get_rtsp_service().list_state(denied=set(), connected=set())
+    return NormalResponse(code=0, message="ok", data=records)
+
+
 @router.post("/rtsp_cameras", response_model=NormalResponse)
 async def create_rtsp_camera(
     request: RtspCameraCreate,
