@@ -31,7 +31,7 @@ select = [
   "F", # Pyflakes
   "I", # isort
 ]
-ignore = [`n  "I001", # import sorting (auto-fixable, handled by editor)
+ignore = [
   "E501", # Line too long
   "F403", # from xxx import *
 ]
