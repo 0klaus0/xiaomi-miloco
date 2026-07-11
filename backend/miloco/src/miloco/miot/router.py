@@ -16,7 +16,11 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.websockets import WebSocketDisconnect
 from miloco.config import get_settings
 from miloco.manager import get_manager
-from miloco.middleware import BusinessException, verify_token, verify_websocket_token
+from miloco.middleware import (
+    BusinessException,
+    verify_token,
+    verify_websocket_token,
+)
 from miloco.middleware.exceptions import HTTPException
 from miloco.miot.schema import (
     AuthorizeRequest,
@@ -88,32 +92,24 @@ async def _first_frame_watchdog(
     logger.warning(
         "First-frame watchdog fired, %s.%d — no frame in %.0fs, camera likely "
         "unreachable (cross-LAN / offline / PPCS relay not established)",
-        camera_id,
-        channel,
-        _FIRST_FRAME_TIMEOUT_S,
+        camera_id, channel, _FIRST_FRAME_TIMEOUT_S,
     )
     try:
         # reason 是给将来按机器码分流预留的字段;前端 watch.html 当前只展示 message,
         # 不读 reason。两个都发,前端按需取。
         await websocket.send_text(
-            json.dumps(
-                {
-                    "type": "error",
-                    "reason": "camera_unreachable",
-                    "message": "连不上摄像头(可能不在同一局域网,或摄像头离线)",
-                }
-            )
+            json.dumps({
+                "type": "error",
+                "reason": "camera_unreachable",
+                "message": "连不上摄像头(可能不在同一局域网,或摄像头离线)",
+            })
         )
     except Exception as err:
         # send 失败基本意味着连接已被对端关掉——再 close 也是白搭,还会再抛一条
         # error 把"连接没了"这件正常事刷成两条 ERROR。直接收尾,主流程 finally 的
         # close_connection 负责清理。降到 info,不混进真 error。
-        logger.info(
-            "watchdog send skipped (conn likely gone), %s.%d: %s",
-            camera_id,
-            channel,
-            err,
-        )
+        logger.info("watchdog send skipped (conn likely gone), %s.%d: %s",
+                    camera_id, channel, err)
         return
     try:
         # 1011 + 短 reason(已被 _truncate_ws_reason 口径约束在 control frame 上限内)
@@ -479,6 +475,7 @@ async def send_notify(
     return NormalResponse(code=0, message="Notification sent successfully", data=None)
 
 
+
 # ─── scope: 家庭 / 相机接入范围 ──────────────────────────────────────────────
 
 
@@ -583,17 +580,12 @@ async def record_clip(
     """
     logger.info(
         "record_clip API called, user: %s, camera: %s.%d, dur=%dms",
-        current_user,
-        camera_id,
-        channel,
-        duration_ms,
+        current_user, camera_id, channel, duration_ms,
     )
     recorder = NalClipRecorder(duration_ms=duration_ms)
     try:
         await miot_video_stream_manager.register_recorder(
-            camera_id,
-            channel,
-            recorder,
+            camera_id, channel, recorder,
         )
     except RuntimeError as e:
         # PPCS not handshaken / camera not bound — surface as 503 so the
@@ -608,9 +600,7 @@ async def record_clip(
         except asyncio.TimeoutError:
             logger.warning(
                 "record_clip timeout, %s.%d — no keyframe within %.1fs",
-                camera_id,
-                channel,
-                timeout_s,
+                camera_id, channel, timeout_s,
             )
             raise HTTPException(
                 message=(
@@ -622,16 +612,12 @@ async def record_clip(
     finally:
         recorder.cancel()
         await miot_video_stream_manager.unregister_recorder(
-            camera_id,
-            channel,
-            recorder,
+            camera_id, channel, recorder,
         )
 
     logger.info(
         "record_clip OK, %s.%d, %d bytes",
-        camera_id,
-        channel,
-        len(mp4_bytes),
+        camera_id, channel, len(mp4_bytes),
     )
     return Response(
         content=mp4_bytes,
@@ -640,7 +626,8 @@ async def record_clip(
             "Cache-Control": "no-store",
             # Suggested filename so the browser File API picks up a sensible
             # name if the blob is ever saved manually.
-            "Content-Disposition": f'inline; filename="clip_{camera_id}_{channel}_{duration_ms}ms.mp4"',
+            "Content-Disposition":
+                f'inline; filename="clip_{camera_id}_{channel}_{duration_ms}ms.mp4"',
         },
     )
 
