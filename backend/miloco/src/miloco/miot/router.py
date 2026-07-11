@@ -38,6 +38,7 @@ from miloco.miot.ws import (
     miot_video_stream_manager,
 )
 from miloco.schema.common_schema import NormalResponse
+from miloco.rtsp.service import get_rtsp_service
 from miloco.utils.common import escape_for_js_string
 
 logger = logging.getLogger(name=__name__)
@@ -508,6 +509,8 @@ async def switch_scope_home(
 )
 async def list_scope_cameras(current_user: str = Depends(verify_token)):
     cameras = await manager.miot_service.list_cameras_with_state()
+    rtsp_cameras = get_rtsp_service().list_state(denied=set(), connected=set())
+    cameras.extend(rtsp_cameras)
     return NormalResponse(code=0, message="ok", data=cameras)
 
 
