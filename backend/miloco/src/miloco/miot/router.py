@@ -37,8 +37,8 @@ from miloco.miot.ws import (
     miot_audio_stream_manager,
     miot_video_stream_manager,
 )
-from miloco.schema.common_schema import NormalResponse
 from miloco.rtsp.service import get_rtsp_service
+from miloco.schema.common_schema import NormalResponse
 from miloco.utils.common import escape_for_js_string
 
 logger = logging.getLogger(name=__name__)
