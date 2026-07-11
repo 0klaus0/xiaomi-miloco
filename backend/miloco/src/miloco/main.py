@@ -35,7 +35,6 @@ from miloco.home_profile.router import router as home_profile_router
 from miloco.manager import get_manager
 from miloco.middleware.exception_handler import handle_exception
 from miloco.miot.router import router as miot_router
-from miloco.rtsp.router import router as rtsp_router
 from miloco.node_monitor.event_log import NodeEventLog
 from miloco.node_monitor.monitor import get_monitor
 from miloco.node_monitor.resource_monitor import ResourceMonitor
