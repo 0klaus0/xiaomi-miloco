@@ -14,29 +14,17 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query, WebSocket
 from fastapi.responses import HTMLResponse, Response
 from fastapi.websockets import WebSocketDisconnect
-
 from miloco.config import get_settings
 from miloco.manager import get_manager
-from miloco.middleware import (
-    BusinessException,
-    verify_token,
-    verify_websocket_token,
-)
+from miloco.middleware import (BusinessException, verify_token,
+                               verify_websocket_token)
 from miloco.middleware.exceptions import HTTPException
-from miloco.miot.schema import (
-    AuthorizeRequest,
-    CameraToggleRequest,
-    CameraVoiceToggleRequest,
-    DeviceControlRequest,
-    HomeSwitchRequest,
-    MipsStatusResponse,
-    SendNotifyRequest,
-)
-from miloco.miot.ws import (
-    NalClipRecorder,
-    miot_audio_stream_manager,
-    miot_video_stream_manager,
-)
+from miloco.miot.schema import (AuthorizeRequest, CameraToggleRequest,
+                                CameraVoiceToggleRequest, DeviceControlRequest,
+                                HomeSwitchRequest, MipsStatusResponse,
+                                SendNotifyRequest)
+from miloco.miot.ws import (NalClipRecorder, miot_audio_stream_manager,
+                            miot_video_stream_manager)
 from miloco.rtsp.service import get_rtsp_service
 from miloco.schema.common_schema import NormalResponse
 from miloco.utils.common import escape_for_js_string
