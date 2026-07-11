@@ -20,8 +20,7 @@ from urllib.parse import parse_qsl, urlencode
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               RedirectResponse)
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from miloco.admin.router import router as admin_router
 from miloco.config import get_settings, register_reset_hook
 from miloco.database.connector import init_database
@@ -36,15 +35,18 @@ from miloco.node_monitor.resource_monitor import ResourceMonitor
 from miloco.node_monitor.router import router as monitor_router
 from miloco.node_monitor.router import set_resource_monitor
 from miloco.node_monitor.watchdog import WatchdogTask
-from miloco.observability.agent_meta_poller import (AgentMetaPoller,
-                                                    set_agent_meta_poller)
-from miloco.observability.cleanup import (cleanup_agent_runs_table,
-                                          cleanup_events_table,
-                                          cleanup_trace_jsonl,
-                                          cleanup_traces_device_table,
-                                          cleanup_traces_table)
-from miloco.observability.metrics_client import (MetricsClient,
-                                                 set_metrics_client)
+from miloco.observability.agent_meta_poller import (
+    AgentMetaPoller,
+    set_agent_meta_poller,
+)
+from miloco.observability.cleanup import (
+    cleanup_agent_runs_table,
+    cleanup_events_table,
+    cleanup_trace_jsonl,
+    cleanup_traces_device_table,
+    cleanup_traces_table,
+)
+from miloco.observability.metrics_client import MetricsClient, set_metrics_client
 from miloco.observability.metrics_db import connect as obs_connect
 from miloco.observability.metrics_db import init_schema as obs_init_schema
 from miloco.observability.router import router as observability_router
@@ -92,7 +94,9 @@ async def _log_cleanup_loop() -> None:
         # 每轮现读,运行时建/删 flag 下个周期立即生效。
         if (miloco_home() / ".debug_observability").exists():
             try:
-                dj = cleanup_trace_jsonl(trace_root, settings.perf.retention.trace_jsonl_days)
+                dj = cleanup_trace_jsonl(
+                    trace_root, settings.perf.retention.trace_jsonl_days
+                )
                 logger.info("Trace jsonl cleanup: removed %d day-dirs", dj)
             except Exception as e:
                 logger.error("Trace jsonl cleanup failed: %s", e)
@@ -104,14 +108,19 @@ async def _log_cleanup_loop() -> None:
                 try:
                     obs_init_schema(conn)
                     dt = cleanup_traces_table(conn, settings.perf.retention.traces_days)
-                    dtd = cleanup_traces_device_table(conn, settings.perf.retention.traces_days)
+                    dtd = cleanup_traces_device_table(
+                        conn, settings.perf.retention.traces_days
+                    )
                     de = cleanup_events_table(conn, settings.perf.retention.events_days)
                     da = cleanup_agent_runs_table(
                         conn, settings.perf.retention.agent_runs_days
                     )
                     logger.info(
                         "Observability cleanup: traces=%d, traces_device=%d, events=%d, agent_runs=%d",
-                        dt, dtd, de, da,
+                        dt,
+                        dtd,
+                        de,
+                        da,
                     )
                     # auto_vacuum=INCREMENTAL 下,DELETE 把页标 free 但不还 OS。
                     # 这里集中触发 incremental_vacuum,每页 4KB × 10000 ≈ 40MB 回收上限。
@@ -168,8 +177,7 @@ async def _rollover_daily_loop() -> None:
     """
     from datetime import datetime as _dt
 
-    from miloco.task_record.rollover import (rollover_daily_job,
-                                             seconds_until_next_run)
+    from miloco.task_record.rollover import rollover_daily_job, seconds_until_next_run
     from miloco.task_record.service import TaskRecordService
     from miloco.utils.time_utils import deploy_timezone
 
@@ -209,7 +217,9 @@ async def _rollover_daily_loop() -> None:
     # period_start 错位导致 rollover 静默跳过。
     try:
         result = await asyncio.to_thread(
-            rollover_daily_job, service, _dt.now(deploy_timezone()),
+            rollover_daily_job,
+            service,
+            _dt.now(deploy_timezone()),
             _notify_rule_engine_rollover,
         )
         logger.info("Rollover self-heal at startup done: %s", result)
@@ -221,7 +231,9 @@ async def _rollover_daily_loop() -> None:
         await asyncio.sleep(wait)
         try:
             result = await asyncio.to_thread(
-                rollover_daily_job, service, _dt.now(deploy_timezone()),
+                rollover_daily_job,
+                service,
+                _dt.now(deploy_timezone()),
                 _notify_rule_engine_rollover,
             )
             logger.info("Daily rollover at 0:05 done: %s", result)
@@ -239,8 +251,8 @@ async def _backfill_tier_a_reid_embeddings() -> None:
     引擎不写, 与实时写库无锁竞争; tier_c 由实时引擎写时即带 emb, 无需在此 backfill。
     """
     try:
-        from miloco.perception.engine.identity.engine import \
-            build_identity_library
+        from miloco.perception.engine.identity.engine import build_identity_library
+
         extractor = get_manager().perception_service.get_reid_extractor()
         if extractor is None:
             logger.info("启动 backfill tier_a ReID emb 跳过: 无可用 ReID extractor")
@@ -524,6 +536,7 @@ def _resolved_static_dirs() -> tuple[Path, Path]:
 register_reset_hook(
     "miloco.main:_resolved_static_dirs", _resolved_static_dirs.cache_clear
 )
+
 
 @app.get("/{full_path:path}")
 async def spa_handler(full_path: str, request: Request):
